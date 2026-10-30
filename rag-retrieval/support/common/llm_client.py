@@ -121,10 +121,15 @@ def _generate_openai(
     message = response.choices[0].message
     if message.content is None:
         refusal = getattr(message, "refusal", None)
-        if refusal:
+        if refusal and refusal.strip():
             return refusal.strip()
         raise RuntimeError("The OpenAI-compatible endpoint returned no text content.")
-    return message.content.strip()
+    answer = message.content.strip()
+    if not answer:
+        raise RuntimeError(
+            "The model returned no answer text. Check its output-token budget and response status."
+        )
+    return answer
 
 
 def generate(

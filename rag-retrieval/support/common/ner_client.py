@@ -9,9 +9,6 @@ import requests
 
 from .config import Settings, load_settings
 from .labels import normalize_values
-from .logging import get_logger
-
-LOGGER = get_logger(__name__)
 
 
 class NERClient:
@@ -31,23 +28,19 @@ class NERClient:
         self.session = session or requests.Session()
 
     def is_available(self) -> bool:
-        """Return True if the NER service answers a trivial request with HTTP 200 and a JSON object.
-
-        ``extract_entities`` hides service failures (it returns an empty list), so a
-        smoke test that must not pass silently without NER calls this first.
-        """
+        """Return True if the service returns a valid entity list for a probe."""
         try:
-            response = self.session.post(self.service_url, json={"text": "NER availability check"}, timeout=self.timeout)
-            return response.status_code == 200 and isinstance(response.json(), dict)
-        except Exception:  # noqa: BLE001 -- any failure means "not available"
+            self.extract_entities("NER availability check")
+            return True
+        except RuntimeError:
             return False
 
     def extract_entities(self, text: str, *, labels: Optional[Iterable[str]] = None) -> List[str]:
         """Return normalized entity strings for ``text``.
 
-        Network/service failures are swallowed into an empty list so a
-        flaky NER call never takes down ingest or query -- retrieval simply
-        falls back to full-text matching for that one item.
+        A valid empty entity list is allowed. Failed requests or malformed
+        responses stop the operation so incomplete NER work is not reported
+        as a successful ingestion or query.
         """
         payload: dict[str, Any] = {"text": str(text or "")}
         label_list = [str(label).strip() for label in (labels or []) if str(label).strip()]
@@ -58,13 +51,14 @@ class NERClient:
             response = self.session.post(self.service_url, json=payload, timeout=self.timeout)
             response.raise_for_status()
             data = response.json()
-        except Exception as exc:
-            LOGGER.warning("NER request failed for %d chars: %s", len(payload["text"]), exc)
-            return []
+        except (requests.RequestException, ValueError) as exc:
+            raise RuntimeError(
+                "NER request failed; start or restart the NER service and rerun this operation."
+            ) from exc
 
-        entities = data.get("entities") if isinstance(data, dict) else []
-        if not isinstance(entities, list):
-            return []
+        entities = data.get("entities") if isinstance(data, dict) else None
+        if not isinstance(entities, list) or any(not isinstance(value, str) for value in entities):
+            raise RuntimeError("NER service returned an invalid 'entities' list; check the service and retry.")
         return normalize_values(entities)
 
 
