@@ -1,0 +1,47 @@
+{
+  "_comment": "Illustrative OpenSearch Security role definitions, NOT applied automatically by any script in this repo (doing so requires a cluster-admin credential this codebase does not hold -- OPENSEARCH_USER/PASSWORD in .env is intentionally just one shared app credential today). Apply each role with the OpenSearch Security plugin's REST API, e.g.: curl -u <admin> -X PUT https://<host>:9200/_plugins/_security/api/roles/recipe_writer -H 'Content-Type: application/json' -d @- <<< '<that role's body below>' -- then map real users/credentials to these roles instead of sharing one over-privileged account across ingest, query, and audit-review.",
+
+  "recipe_writer": {
+    "_comment": "Used by ingest.py across every task. Can write recipe/document indexes but has NO access to recipes-audit-log -- ingestion should never be able to tamper with the audit trail it doesn't even write to.",
+    "cluster_permissions": [],
+    "index_permissions": [
+      {
+        "index_patterns": ["recipes-*", "!recipes-audit-log"],
+        "allowed_actions": ["indices:data/write/index", "indices:data/write/bulk", "indices:admin/create", "indices:admin/mapping/get"]
+      }
+    ]
+  },
+
+  "recipe_reader": {
+    "_comment": "Used by query.py's grounding/refine search calls. Read-only, and still explicitly excludes the audit index -- a query-serving credential has no legitimate reason to read the compliance log.",
+    "cluster_permissions": [],
+    "index_permissions": [
+      {
+        "index_patterns": ["recipes-*", "!recipes-audit-log"],
+        "allowed_actions": ["indices:data/read/search", "indices:data/read/get"]
+      }
+    ]
+  },
+
+  "audit_writer": {
+    "_comment": "Used by log_audit_event() (query.py, every Governance Tiering and later query). Can index new audit records but explicitly CANNOT delete or update existing ones -- an audit trail that the query path itself can edit or purge after the fact isn't trustworthy for compliance.",
+    "cluster_permissions": [],
+    "index_permissions": [
+      {
+        "index_patterns": ["recipes-audit-log"],
+        "allowed_actions": ["indices:data/write/index", "indices:admin/create"]
+      }
+    ]
+  },
+
+  "audit_admin": {
+    "_comment": "For compliance reviewers / monitor.py / policy_registry.py and retention (ISM) management only. Separate credential from audit_writer -- the role that reads and administers the audit trail should not be the same role the live query path writes through.",
+    "cluster_permissions": ["cluster:admin/opendistro/ism/*"],
+    "index_permissions": [
+      {
+        "index_patterns": ["recipes-audit-log"],
+        "allowed_actions": ["indices:data/read/search", "indices:admin/*"]
+      }
+    ]
+  }
+}

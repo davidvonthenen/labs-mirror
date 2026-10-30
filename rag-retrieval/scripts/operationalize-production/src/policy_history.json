@@ -1,0 +1,15 @@
+{
+  "policy": "hot_lt_tiering",
+  "description": "Governance policy from Governance Tiering deciding which recipe data must always be reachable through the fast/default search path (tier=hot) vs. the archival path (tier=lt), and how confident a hot-only search must be before answering without escalating to the full corpus.",
+  "history": [
+    {
+      "version": 1,
+      "date": "2026-08-04",
+      "approved_by": "TBD -- record the actual approver here",
+      "rule": "tier = 'hot' if recipe.cautions is non-empty (any allergen caution present), else 'lt'. See scripts/governance-tiering/src/ingest.py assign_tier().",
+      "tier_min_hot_score": 15.0,
+      "tier_min_hot_candidates": 3,
+      "notes": "Initial policy, introduced with Governance Tiering. Thresholds tuned against the 260-recipe sample corpus, where an exact name/source match scores ~22-28 and a loose incidental word-overlap match scores ~3-9."
+    }
+  ]
+}

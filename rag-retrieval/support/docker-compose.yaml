@@ -1,0 +1,59 @@
+# Copyright 2026 NetApp Instaclustr contributors. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: rag-retrieval
+
+services:
+  lab:
+    image: docker.io/davidvonthenen/netapp-instaclustr-ragretrieval-lab-dev:0.0.1
+    container_name: rag-retrieval-lab
+    working_dir: /workspace/rag-retrieval
+    stdin_open: true
+    tty: true
+    env_file:
+      - .env
+    environment:
+      # OPENSEARCH_HOST: opensearch-single
+      # OPENSEARCH_DASHBOARDS_URL: http://opensearch-single-dashboards:5601
+      # Run Compose from support/ so shell values override support/.env.
+      # '-' keeps an explicitly empty shell value rather than replacing it.
+      LAB_HEALTH_URL: http://lab:8088/healthz
+      LAB_REPO_DIR: /workspace/rag-retrieval
+      LAB_CONTAINER: "true"
+
+      HF_HOME: /home/lab/.cache/huggingface
+      HF_HUB_CACHE: /home/lab/.cache/huggingface/hub
+      HF_TOKEN: ${HF_TOKEN:-}
+
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-}
+      BEDROCK_MAX_TOKENS: ${BEDROCK_MAX_TOKENS:-1024}
+      BEDROCK_TEMPERATURE: ${BEDROCK_TEMPERATURE:-0.2}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-6-luna}
+
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-384}
+      SPACY_MODEL: ${SPACY_MODEL:-en_core_web_sm}
+
+      PORT: ${PORT-8000}
+      NER_SERVICE_URL: ${NER_SERVICE_URL-http://127.0.0.1:8000/ner}
+      NER_TIMEOUT_SECS: ${NER_TIMEOUT_SECS-5.0}
+
+      RAG_TOP_K: ${RAG_TOP_K-5}
+      RAG_NUM_CANDIDATES: ${RAG_NUM_CANDIDATES-25}
+      RECIPE_HTTP_TIMEOUT_SECS: ${RECIPE_HTTP_TIMEOUT_SECS-10.0}
+      RECIPE_HTTP_USER_AGENT: ${RECIPE_HTTP_USER_AGENT-rag-retrieval/1.0}
+
+      SEARCH_PREFERENCE: ${SEARCH_PREFERENCE-rag-retrieval}
+      TIER_MIN_HOT_SCORE: ${TIER_MIN_HOT_SCORE-15.0}
+      TIER_MIN_HOT_CANDIDATES: ${TIER_MIN_HOT_CANDIDATES-3}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS-180}
+      GOVERNANCE_ALERT_LOOKBACK_HOURS: ${GOVERNANCE_ALERT_LOOKBACK_HOURS-24}
+      GOVERNANCE_MAX_ESCALATION_RATE: ${GOVERNANCE_MAX_ESCALATION_RATE-0.5}
+

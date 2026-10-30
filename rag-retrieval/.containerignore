@@ -1,0 +1,27 @@
+# Build context is the rag-retrieval/ project root.
+.git
+**/.git
+.env
+.env.*
+**/.env
+**/.env.*
+!support/.env.example
+.venv
+**/.venv
+__pycache__
+**/__pycache__
+*.pyc
+**/*.pyc
+.cache
+**/.cache
+.pytest_cache
+**/.pytest_cache
+.DS_Store
+**/.DS_Store
+*.zip
+**/*.zip
+*.gguf
+**/*.gguf
+*.jsonl
+**/*.jsonl
+.lab-revision

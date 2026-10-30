@@ -1,0 +1,204 @@
+# Go prepares prerequisites; exercises run only through `insta task run`.
+schema_version: 1
+id: rag-retrieval
+name: RAG Retrieval
+instructions: AGENTS.md
+
+runtime:
+  kind: python
+  python: "3.12"
+  requirements: support/requirements.txt
+  setup:
+    - [python, -m, pip, install, -r, support/requirements-test.txt]
+    - [python, -m, spacy, download, en_core_web_sm]
+
+config:
+  OPENSEARCH_HOST: {description: "OpenSearch hostname, without a scheme or port."}
+  OPENSEARCH_PORT: {type: integer, default: "9200"}
+  OPENSEARCH_USER: {}
+  OPENSEARCH_PASSWORD: {secret: true}
+  OPENSEARCH_SSL: {type: boolean, default: "true"}
+  OPENSEARCH_VECTOR_RECIPES_BASELINE_INDEX: {default: ragretrieval-recipes-vector-baseline}
+  OPENSEARCH_BM25_RECIPES_BASELINE_INDEX: {default: ragretrieval-recipes-bm25-baseline}
+  OPENSEARCH_HYBRID_INDEX: {default: ragretrieval-recipes-hybrid}
+  OPENSEARCH_RECIPE_BM25_INDEX: {default: ragretrieval-recipes-bm25}
+  OPENSEARCH_RECIPE_VECTOR_INDEX: {default: ragretrieval-recipes-vector}
+  OPENSEARCH_AUDIT_INDEX: {default: ragretrieval-recipes-audit-log}
+  LLM_PROVIDER: {default: openai, enum: [openai, bedrock]}
+  OPENAI_API_KEY: {secret: true}
+  OPENAI_BASE_URL: {default: "https://api.openai.com/v1"}
+  OPENAI_MODEL: {default: gpt-6-luna}
+  BEDROCK_MODEL_ID: {}
+  AWS_REGION: {default: us-east-1}
+  AWS_PROFILE: {}
+  AWS_ACCESS_KEY_ID: {secret: true}
+  AWS_SECRET_ACCESS_KEY: {secret: true}
+  AWS_SESSION_TOKEN: {secret: true}
+  EMBEDDING_MODEL: {default: sentence-transformers/all-MiniLM-L6-v2}
+  EMBEDDING_DIMENSION: {type: integer, default: "384"}
+  SPACY_MODEL: {default: en_core_web_sm, enum: [en_core_web_sm]}
+  NER_SERVICE_URL: {default: "http://127.0.0.1:8000/ner", enum: ["http://127.0.0.1:8000/ner"]}
+  PORT: {type: integer, default: "8000", enum: ["8000"]}
+  TIER_MIN_HOT_SCORE: {type: number, default: "15.0"}
+  TIER_MIN_HOT_CANDIDATES: {type: integer, default: "3"}
+  AUDIT_RETENTION_DAYS: {type: integer, default: "180"}
+  GOVERNANCE_ALERT_LOOKBACK_HOURS: {type: integer, default: "24"}
+  GOVERNANCE_MAX_ESCALATION_RATE: {type: number, default: "0.5"}
+
+platforms:
+  opensearch:
+    provider: instaclustr-opensearch
+    request: deploy-opensearch.json
+
+services:
+  ner:
+    cwd: scripts/baseline-bm25-rag
+    command: [python, -m, src.ner_service]
+    environment:
+      optional: [SPACY_MODEL, PORT]
+    probe:
+      url: http://127.0.0.1:8000/ner
+      method: POST
+      body: '{"text":"OpenAI is in San Francisco."}'
+
+tasks:
+  setup-environment:
+    blueprint: tasks/setup-environment.md
+    source: .
+    environment:
+      required: [OPENSEARCH_HOST, OPENSEARCH_USER, OPENSEARCH_PASSWORD]
+      conditional:
+        - operations: [validate]
+          when: {LLM_PROVIDER: openai}
+          required: [OPENAI_API_KEY, OPENAI_MODEL]
+        - operations: [validate]
+          when: {LLM_PROVIDER: bedrock}
+          required: [BEDROCK_MODEL_ID, AWS_REGION]
+    operations:
+      validate:
+        command: [python, support/validate_setup.py]
+        effects: [local-read]
+        verification: "The existing readiness checker exited successfully; no live retrieval was tested."
+
+  baseline-vector-rag:
+    blueprint: tasks/baseline-vector-rag.md
+    source: scripts/baseline-vector-rag
+    requires: {platforms: [opensearch]}
+    environment: &rag_environment
+      required: [OPENSEARCH_HOST, OPENSEARCH_USER, OPENSEARCH_PASSWORD]
+      conditional:
+        - operations: [query, validate]
+          when: {LLM_PROVIDER: openai}
+          required: [OPENAI_API_KEY, OPENAI_MODEL]
+        - operations: [query, validate]
+          when: {LLM_PROVIDER: bedrock}
+          required: [BEDROCK_MODEL_ID, AWS_REGION]
+    operations:
+      ingest: &ingest
+        command: [python, -m, src.ingest]
+        effects: [index-create-if-missing, index-write, model-cache-write]
+        verification: "Ingestion exited successfully; query and educational assertions have not run."
+      query: &query
+        command: [python, -m, src.query]
+        effects: [index-create-if-missing, index-read, remote-model-call, model-cache-write]
+        indexes: [{config: OPENSEARCH_VECTOR_RECIPES_BASELINE_INDEX}]
+        verification: "The built-in sample queries exited; inspect their retrieved evidence and answers. Custom questions use the existing Python --question option."
+      validate: &validate
+        command: [python, -m, src.validate]
+        effects: [index-create-if-missing, index-read, remote-model-call, model-cache-write]
+        indexes: [{config: OPENSEARCH_VECTOR_RECIPES_BASELINE_INDEX}]
+        verification: "The task's assertion program exited successfully; inspect warnings and the task completion checkpoint."
+
+  baseline-bm25-rag:
+    blueprint: tasks/baseline-bm25-rag.md
+    source: scripts/baseline-bm25-rag
+    requires: {platforms: [opensearch], services: [ner]}
+    environment: *rag_environment
+    operations:
+      ingest: *ingest
+      query:
+        <<: *query
+        indexes: [{config: OPENSEARCH_BM25_RECIPES_BASELINE_INDEX}]
+      validate:
+        <<: *validate
+        indexes: [{config: OPENSEARCH_BM25_RECIPES_BASELINE_INDEX}]
+
+  hybrid-rag-native:
+    blueprint: tasks/hybrid-rag-native.md
+    source: scripts/hybrid-rag-native
+    requires: {platforms: [opensearch]}
+    environment: *rag_environment
+    operations:
+      ingest:
+        <<: *ingest
+        effects: [index-write, search-pipeline-write, model-cache-write]
+      query:
+        <<: *query
+        indexes: [{config: OPENSEARCH_HYBRID_INDEX}]
+        effects: [index-read, remote-model-call, model-cache-write]
+      validate:
+        <<: *validate
+        indexes: [{config: OPENSEARCH_HYBRID_INDEX}]
+        effects: [index-read, remote-model-call, model-cache-write]
+
+  hybrid-rag-ner-rerank:
+    blueprint: tasks/hybrid-rag-ner-rerank.md
+    source: scripts/hybrid-rag-ner-rerank
+    requires: {platforms: [opensearch], services: [ner]}
+    environment: *rag_environment
+    operations:
+      ingest:
+        <<: *ingest
+        effects: [index-write, governance-tier-overwrite, model-cache-write]
+      query:
+        <<: *query
+        indexes: [{config: OPENSEARCH_RECIPE_BM25_INDEX}, {config: OPENSEARCH_RECIPE_VECTOR_INDEX}]
+      validate:
+        <<: *validate
+        indexes: [{config: OPENSEARCH_RECIPE_BM25_INDEX}, {config: OPENSEARCH_RECIPE_VECTOR_INDEX}]
+
+  governance-tiering:
+    blueprint: tasks/governance-tiering.md
+    source: scripts/governance-tiering
+    requires: {platforms: [opensearch], services: [ner]}
+    environment: *rag_environment
+    operations:
+      ingest: *ingest
+      query:
+        <<: *query
+        indexes: [{config: OPENSEARCH_RECIPE_BM25_INDEX}, {config: OPENSEARCH_RECIPE_VECTOR_INDEX}]
+        effects: [index-read, audit-write, remote-model-call, model-cache-write]
+      validate:
+        <<: *validate
+        indexes: [{config: OPENSEARCH_RECIPE_BM25_INDEX}, {config: OPENSEARCH_RECIPE_VECTOR_INDEX}]
+        effects: [index-read, audit-write, remote-model-call, model-cache-write]
+
+  operationalize-production:
+    blueprint: tasks/operationalize-production.md
+    source: scripts/operationalize-production
+    operations:
+      policy-registry:
+        command: [python, -m, src.policy_registry]
+        effects: [local-read]
+        verification: "Configured tier thresholds match the checked-in policy history."
+      monitor:
+        command: [python, -m, src.monitor]
+        requires: {platforms: [opensearch], services: [ner]}
+        required: [OPENSEARCH_HOST, OPENSEARCH_USER, OPENSEARCH_PASSWORD]
+        effects: [index-read]
+        verification: "The audit search and NER probe completed without evaluated alerts; an empty audit window is not proof of a completed governance exercise."
+      validate:
+        command: [python, -m, src.validate]
+        requires: {platforms: [opensearch], services: [ner]}
+        required: [OPENSEARCH_HOST, OPENSEARCH_USER, OPENSEARCH_PASSWORD]
+        indexes: [{config: OPENSEARCH_AUDIT_INDEX}]
+        effects: [local-read, index-read]
+        verification: "Read-only checks verified current policy thresholds, existing audit data and NER health. Inspect retention PASS/SKIP; this command does not install a deletion policy."
+
+lifecycle:
+  up:
+    - {platform: opensearch, action: ensure}
+    - {service: ner, action: start}
+  down:
+    - {service: ner, action: stop}
+    - {platform: opensearch, action: destroy_owned}

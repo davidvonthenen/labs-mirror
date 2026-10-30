@@ -1,22 +1,39 @@
 # project
+.DS_Store
 .env
 .env.*
-!.env.openai.example
-!.env.nebius.example
 __pycache__/
 *.pyc
+**/commands.txt
+
+# rag retrieval
+.lab-revision
+
+# agentic rag
+!.env.openai.example
+!.env.nebius.example
 validation-report*.json
 ai_media_dataset_20250911-1000lines.csv
 quarterly_filings
+
+## build
 agentic-rag/support/opensearch
-agentic-rag/support/commands.txt
 opensearch-users.csv
-.DS_Store
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
 *$py.class
+.env
+venv/
+.idea/
+.vscode/
+site/
+_migration/
+bin/
+target/
+*.log
+node_modules/
 
 # C extensions
 *.so
@@ -223,6 +240,13 @@ tempCodeRunnerFile.py
 
 # PyPI configuration file
 .pypirc
+
+# Cursor
+#  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
+#  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
+#  refer to https://docs.cursor.com/context/ignore-files
+.cursorignore
+.cursorindexingignore
 
 # Marimo
 marimo/_static/

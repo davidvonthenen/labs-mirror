@@ -1,0 +1,1354 @@
+{
+  "$schema": "lab.schema.json",
+  "schema_version": 1,
+  "lab_id": "rag-retrieval",
+  "title": "RAG Retrieval Workshop",
+  "entrypoints": {
+    "human": "README.md",
+    "instructions": "AGENTS.md",
+    "skill": ".agents/skills/instaclustr-rag-builder/SKILL.md",
+    "adaptation": "USING_THE_TEMPLATE.md",
+    "architecture": "architecture.md",
+    "contracts": "references/agent-contracts.md"
+  },
+  "environment": {
+    "python": {
+      "minimum": "3.10",
+      "recommended": "3.12"
+    },
+    "requirements": "support/requirements.txt",
+    "config_example": "support/.env.example",
+    "config_loader": "support/common/config.py"
+  },
+  "shared_sources": [
+    "support/common/__init__.py",
+    "support/common/config.py",
+    "support/common/embeddings.py",
+    "support/common/labels.py",
+    "support/common/llm_client.py",
+    "support/common/logging.py",
+    "support/common/ner_client.py",
+    "support/common/opensearch_client.py",
+    "support/recipes/recipes_sample.json"
+  ],
+  "resources": [
+    {
+      "id": "vector-baseline-index",
+      "type": "opensearch_index",
+      "env": "OPENSEARCH_VECTOR_RECIPES_BASELINE_INDEX",
+      "default": "recipes-vector-baseline",
+      "used_by": [
+        "baseline-vector-rag"
+      ],
+      "defined_in": "support/common/config.py",
+      "lifecycle": [
+        "Ingest replaces matching recipe IDs; query can create an empty index.",
+        "Use the same environment override for ingest and query; ingestion CLI overrides do not persist."
+      ]
+    },
+    {
+      "id": "bm25-baseline-index",
+      "type": "opensearch_index",
+      "env": "OPENSEARCH_BM25_RECIPES_BASELINE_INDEX",
+      "default": "recipes-bm25-baseline",
+      "used_by": [
+        "baseline-bm25-rag"
+      ],
+      "defined_in": "support/common/config.py",
+      "lifecycle": [
+        "Ingest creates the index and replaces matching recipe IDs."
+      ]
+    },
+    {
+      "id": "native-hybrid-index",
+      "type": "opensearch_index",
+      "env": "OPENSEARCH_HYBRID_INDEX",
+      "default": "recipes-hybrid",
+      "used_by": [
+        "hybrid-rag-native"
+      ],
+      "defined_in": "support/common/config.py",
+      "lifecycle": [
+        "Stores text and vectors together; ingest and query can create it."
+      ]
+    },
+    {
+      "id": "recipe-bm25-index",
+      "type": "opensearch_index",
+      "env": "OPENSEARCH_RECIPE_BM25_INDEX",
+      "default": "recipes-bm25",
+      "used_by": [
+        "hybrid-rag-ner-rerank",
+        "governance-tiering"
+      ],
+      "defined_in": "support/common/config.py",
+      "lifecycle": [
+        "Shared with the paired recipe vector index; both must contain matching IDs and metadata.",
+        "Task 5 writes all-hot tiers; task 6 replaces them with hot/lt. Re-ingesting task 5 undoes task 6 tier assignments."
+      ]
+    },
+    {
+      "id": "recipe-vector-index",
+      "type": "opensearch_index",
+      "env": "OPENSEARCH_RECIPE_VECTOR_INDEX",
+      "default": "recipes-vector",
+      "used_by": [
+        "hybrid-rag-ner-rerank",
+        "governance-tiering"
+      ],
+      "defined_in": "support/common/config.py",
+      "lifecycle": [
+        "Shares corpus and tier state with the recipe BM25 index; pair writes have no transaction.",
+        "Embedding model and dimension must match the existing mapping and corpus vectors."
+      ]
+    },
+    {
+      "id": "audit-index",
+      "type": "opensearch_index",
+      "env": "OPENSEARCH_AUDIT_INDEX",
+      "default": "recipes-audit-log",
+      "used_by": [
+        "governance-tiering",
+        "operationalize-production"
+      ],
+      "defined_in": "support/common/config.py",
+      "lifecycle": [
+        "Governance records include question and generated answer; writes are best-effort.",
+        "Production validation may attach a policy that later deletes this entire index based on index age."
+      ]
+    },
+    {
+      "id": "native-search-pipeline",
+      "type": "search_pipeline",
+      "env": null,
+      "default": "hybrid-search-pipeline",
+      "used_by": [
+        "hybrid-rag-native"
+      ],
+      "defined_in": "support/common/opensearch_client.py",
+      "lifecycle": [
+        "Fixed cluster-wide name; index suffixes do not isolate it.",
+        "Ingest PUTs chosen weights; every query PUTs defaults 0.3/0.7 again."
+      ]
+    },
+    {
+      "id": "audit-retention-policy",
+      "type": "ism_policy",
+      "env": null,
+      "default": "recipes-audit-log-retention",
+      "used_by": [
+        "operationalize-production"
+      ],
+      "defined_in": "support/common/opensearch_client.py",
+      "lifecycle": [
+        "Fixed cluster-wide name; review an existing policy before reuse.",
+        "Production validate attempts policy creation and attachment; HTTP 409 is accepted without updating its contents.",
+        "The delete action removes the whole index at AUDIT_RETENTION_DAYS of index age; default 180."
+      ]
+    },
+    {
+      "id": "embedding-model",
+      "type": "embedding_model",
+      "env": "EMBEDDING_MODEL",
+      "default": "sentence-transformers/all-MiniLM-L6-v2",
+      "used_by": [
+        "setup-environment",
+        "baseline-vector-rag",
+        "hybrid-rag-native",
+        "hybrid-rag-ner-rerank",
+        "governance-tiering"
+      ],
+      "defined_in": "support/common/config.py",
+      "lifecycle": [
+        "May download weights when first loaded; default output is 384 dimensions.",
+        "Vectors are L2-normalized; preserve model/dimension consistency across ingestion and querying."
+      ]
+    },
+    {
+      "id": "ner-service",
+      "type": "local_service",
+      "env": "NER_SERVICE_URL",
+      "default": "http://127.0.0.1:8000/ner",
+      "used_by": [
+        "setup-environment",
+        "baseline-bm25-rag",
+        "hybrid-rag-ner-rerank",
+        "governance-tiering",
+        "operationalize-production"
+      ],
+      "defined_in": "support/common/config.py",
+      "lifecycle": [
+        "Started manually from baseline-bm25-rag; no task or container startup automatically starts it.",
+        "Service reads PORT/SPACY_MODEL from its process environment; client URL is separately configured.",
+        "A failed request removes NER entity boosts but hard filters remain."
+      ]
+    },
+    {
+      "id": "llm-provider",
+      "type": "model_endpoint",
+      "env": "LLM_PROVIDER",
+      "default": "bedrock",
+      "used_by": [
+        "baseline-vector-rag",
+        "baseline-bm25-rag",
+        "hybrid-rag-native",
+        "hybrid-rag-ner-rerank",
+        "governance-tiering"
+      ],
+      "defined_in": "support/common/llm_client.py",
+      "lifecycle": [
+        "Supported providers are bedrock (Anthropic Messages-shaped invoke_model) and openai (chat completions).",
+        "Queries send prompts and retrieved text to the configured provider and can incur charges.",
+        "Ingest and production operations do not invoke the LLM."
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "setup-environment",
+      "number": 1,
+      "title": "Prepare the workspace",
+      "goal": "Configure the shared Python environment, OpenSearch connection, LLM provider and optional local NER service.",
+      "docs": "tasks/setup-environment.md",
+      "reference": "references/setup-environment.md",
+      "troubleshooting": "troubleshooting/setup-environment.md",
+      "concepts": [
+        "concepts/INFRASTRUCTURE_CHOICES.md",
+        "concepts/EMBEDDING_MODELS.md"
+      ],
+      "requires": [],
+      "source_files": [
+        "support/validate_setup.py",
+        "support/requirements.txt",
+        "support/.env.example",
+        "support/common/config.py",
+        "support/common/__init__.py",
+        "support/docker-compose.yaml",
+        "support/Dockerfile.dev",
+        "support/container-entrypoint.sh",
+        "support/runtime_health.py"
+      ],
+      "commands": [
+        {
+          "id": "install-dependencies",
+          "cwd": ".",
+          "argv": [
+            "python",
+            "-m",
+            "pip",
+            "install",
+            "-r",
+            "support/requirements.txt"
+          ],
+          "prerequisites": [
+            "A project-specific virtual environment is active."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "dependency_install",
+            "network_read"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "pip reports successful installation."
+            },
+            "success": [
+              "pip completes dependency installation."
+            ],
+            "limitations": [
+              "This installs packages from configured package indexes; it is not an offline validation command.",
+              "Nonzero exit codes are defined by pip; inspect its error output."
+            ]
+          }
+        },
+        {
+          "id": "install-ner-model",
+          "cwd": ".",
+          "argv": [
+            "python",
+            "-m",
+            "spacy",
+            "download",
+            "en_core_web_sm"
+          ],
+          "prerequisites": [
+            "The shared Python dependencies are installed in the active virtual environment."
+          ],
+          "effects": [
+            "local_write",
+            "dependency_install",
+            "network_read",
+            "model_download"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "The model download/install command completed successfully."
+            },
+            "success": [
+              "The spaCy English model package is installed."
+            ],
+            "limitations": [
+              "Requires network access unless the package is already available through configured caches.",
+              "Nonzero exit codes are defined by spaCy and its package installer; inspect their error output."
+            ]
+          }
+        },
+        {
+          "id": "validate-workspace",
+          "cwd": ".",
+          "argv": [
+            "python",
+            "support/validate_setup.py"
+          ],
+          "prerequisites": [
+            "Dependencies and the spaCy model are installed; configure the root .env or use the documented container environment."
+          ],
+          "effects": [
+            "local_read",
+            "local_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "All required checks passed; WARN lines do not fail the run.",
+              "1": "At least one required check failed.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "Required checks report PASS and the final line is Setup check passed."
+            ],
+            "limitations": [
+              "Does not invoke OpenSearch, NER or the embedding model without the respective optional flag.",
+              "For Bedrock, credential discovery disables EC2 metadata; custom AWS credential providers are not hermetically isolated.",
+              "A support/.env file accepted by file discovery is not loaded by config.py from a task directory; Compose injects it independently."
+            ]
+          }
+        },
+        {
+          "id": "probe-opensearch",
+          "cwd": ".",
+          "argv": [
+            "python",
+            "support/validate_setup.py",
+            "--check-opensearch"
+          ],
+          "prerequisites": [
+            "Workspace validation prerequisites met and the configured cluster may be contacted."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Required checks passed; plugin warnings may remain.",
+              "1": "At least one required check failed.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "The OpenSearch check reports cluster reachability and version."
+            ],
+            "limitations": [
+              "Plugin-list restrictions are tolerated; a missing neural-search plugin is only a WARN.",
+              "This probe does not create indexes, invoke the LLM or test retrieval."
+            ]
+          }
+        },
+        {
+          "id": "probe-embeddings",
+          "cwd": ".",
+          "argv": [
+            "python",
+            "support/validate_setup.py",
+            "--check-embeddings"
+          ],
+          "prerequisites": [
+            "Workspace validation prerequisites met; the embedding model is cached or may be downloaded."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Required checks passed.",
+              "1": "At least one required check failed.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "The model encodes a test sentence and its output length matches EMBEDDING_DIMENSION."
+            ],
+            "limitations": [
+              "This does not verify the mapping or embedding model used by an existing index."
+            ]
+          }
+        },
+        {
+          "id": "probe-ner",
+          "cwd": ".",
+          "argv": [
+            "python",
+            "support/validate_setup.py",
+            "--check-ner"
+          ],
+          "prerequisites": [
+            "Workspace validation prerequisites met.",
+            "The baseline-bm25-rag NER service is running with its spaCy model installed."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Required checks passed.",
+              "1": "At least one required check failed.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "The NER service returns a JSON entities list for the test sentence."
+            ],
+            "limitations": [
+              "An empty entities list can be a valid response."
+            ]
+          }
+        }
+      ],
+      "acceptance": [
+        "The selected interpreter and dependencies are usable.",
+        "Required configuration is present without exposing credential values.",
+        "The index names and shared cluster resources are identified before any live writes.",
+        "Run the separate scripts/validate_lab.py metadata check before configuring live services; it does not prove workspace readiness."
+      ]
+    },
+    {
+      "id": "baseline-vector-rag",
+      "number": 2,
+      "title": "Baseline Vector RAG",
+      "goal": "Demonstrate semantic retrieval over one recipe vector index, including the documented source-disambiguation gap.",
+      "docs": "tasks/baseline-vector-rag.md",
+      "reference": "references/baseline-vector-rag.md",
+      "troubleshooting": "troubleshooting/baseline-vector-rag.md",
+      "concepts": [
+        "concepts/BM25_VS_KNN.md",
+        "concepts/EMBEDDING_MODELS.md",
+        "concepts/CHUNKING.md"
+      ],
+      "requires": [
+        "setup-environment"
+      ],
+      "source_files": [
+        "scripts/baseline-vector-rag/Makefile",
+        "scripts/baseline-vector-rag/src/__init__.py",
+        "scripts/baseline-vector-rag/src/ingest.py",
+        "scripts/baseline-vector-rag/src/query.py",
+        "scripts/baseline-vector-rag/src/validate.py"
+      ],
+      "commands": [
+        {
+          "id": "ingest",
+          "cwd": "scripts/baseline-vector-rag",
+          "argv": [
+            "python",
+            "-m",
+            "src.ingest"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "Target indexes are identified for creation or document replacement."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download",
+            "index_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Completed normally; assess the stated success conditions and limitations.",
+              "1": "Unhandled configuration, dependency, runtime, or assertion failure.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "The unchanged sample logs Ingested 260 recipes into the selected vector baseline index."
+            ],
+            "limitations": [
+              "Writes by recipe_id replace matching documents; records removed from a later data file are not deleted.",
+              "Existing indexes are not checked or migrated for mapping or embedding-dimension compatibility."
+            ]
+          }
+        },
+        {
+          "id": "query",
+          "cwd": "scripts/baseline-vector-rag",
+          "argv": [
+            "python",
+            "-m",
+            "src.query",
+            "--question",
+            "Does the womensweeklyfood.com.au Fish and Chips recipe contain sulfites?"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "The selected LLM provider, model and credentials are configured; generation can incur service charges.",
+            "This component has been ingested into the same indexes its environment selects for querying."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download",
+            "model_inference",
+            "index_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Completed normally; assess the stated success conditions and limitations.",
+              "1": "Unhandled configuration, dependency, runtime, or assertion failure.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "An ANSWER section and the retrieved evidence sections are printed."
+            ],
+            "limitations": [
+              "BM25 and recipe-vector TransportError responses can become empty hits; an LLM answer and exit 0 do not prove successful retrieval.",
+              "Answers are not checked for factual correctness; inspect returned source records.",
+              "The query creates its selected vector index when missing."
+            ]
+          }
+        },
+        {
+          "id": "validate",
+          "cwd": "scripts/baseline-vector-rag",
+          "argv": [
+            "python",
+            "-m",
+            "src.validate"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "The selected LLM provider, model and credentials are configured; generation can incur service charges.",
+            "This component has been ingested into the same indexes its environment selects for querying.",
+            "The unchanged curated recipe sample and expected embedding model are used.",
+            "Python assertions enabled; do not set PYTHONOPTIMIZE or use -O."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download",
+            "model_inference",
+            "index_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "All assertions completed; apply the stated limitations.",
+              "1": "A dependency, configuration, runtime, or assertion failure occurred."
+            },
+            "success": [
+              "Two PASS lines confirm hits/answer and reproduction of the documented retrieval gap."
+            ],
+            "limitations": [
+              "This is a live integration smoke test, not an offline check.",
+              "Runs three LLM generations and may create a missing index.",
+              "A changed corpus or embedding model can invalidate the intentionally failing retrieval example."
+            ]
+          }
+        }
+      ],
+      "acceptance": [
+        "Ingestion uses the vector-baseline index selected by OPENSEARCH_VECTOR_RECIPES_BASELINE_INDEX.",
+        "For the original sample, the thegratefulgirlcooks.com question omits that source while retrieving womensweeklyfood.com.au.",
+        "The live smoke test passes when the original demonstration is intended."
+      ]
+    },
+    {
+      "id": "baseline-bm25-rag",
+      "number": 3,
+      "title": "Baseline BM25 RAG",
+      "goal": "Retrieve literal recipe/source matches with BM25 and optional NER entity boosts.",
+      "docs": "tasks/baseline-bm25-rag.md",
+      "reference": "references/baseline-bm25-rag.md",
+      "troubleshooting": "troubleshooting/baseline-bm25-rag.md",
+      "concepts": [
+        "concepts/BM25_VS_KNN.md",
+        "concepts/NER_IN_RETRIEVAL.md"
+      ],
+      "requires": [
+        "setup-environment"
+      ],
+      "source_files": [
+        "scripts/baseline-bm25-rag/Makefile",
+        "scripts/baseline-bm25-rag/src/__init__.py",
+        "scripts/baseline-bm25-rag/src/ingest.py",
+        "scripts/baseline-bm25-rag/src/query.py",
+        "scripts/baseline-bm25-rag/src/validate.py",
+        "scripts/baseline-bm25-rag/src/ner_service.py"
+      ],
+      "commands": [
+        {
+          "id": "start-ner",
+          "cwd": "scripts/baseline-bm25-rag",
+          "argv": [
+            "python",
+            "-m",
+            "src.ner_service"
+          ],
+          "prerequisites": [
+            "Dependencies and the selected SPACY_MODEL are installed; the chosen PORT is free."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "service_start"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Server terminated normally; readiness is established by an HTTP probe, not this status.",
+              "1": "Startup or unhandled server failure; interrupted processes can report other platform-specific nonzero statuses."
+            },
+            "success": [
+              "The foreground Flask service binds 127.0.0.1:8000 unless PORT is overridden.",
+              "POST /ner accepts a text string and returns entities, entity_pairs, model and request_id."
+            ],
+            "limitations": [
+              "This is a long-running service, not a one-shot validation command.",
+              "Startup reads PORT and SPACY_MODEL from the process environment; it does not load the project .env.",
+              "HTTP 400 reports an invalid payload; HTTP output is separate from CLI startup logs."
+            ]
+          }
+        },
+        {
+          "id": "ingest",
+          "cwd": "scripts/baseline-bm25-rag",
+          "argv": [
+            "python",
+            "-m",
+            "src.ingest"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "Target indexes are identified for creation or document replacement.",
+            "The baseline-bm25-rag NER service is running with its spaCy model installed."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "index_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Completed normally; assess the stated success conditions and limitations.",
+              "1": "Unhandled configuration, dependency, runtime, or assertion failure.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "The unchanged sample logs Ingested 260 recipes into the selected BM25 baseline index."
+            ],
+            "limitations": [
+              "Writes by recipe_id replace matching documents; records removed from a later data file are not deleted.",
+              "Existing indexes are not checked or migrated for mapping or embedding-dimension compatibility.",
+              "NER failures are logged and yield no extracted entities; source and recipe_name tags are still indexed."
+            ]
+          }
+        },
+        {
+          "id": "query",
+          "cwd": "scripts/baseline-bm25-rag",
+          "argv": [
+            "python",
+            "-m",
+            "src.query",
+            "--question",
+            "Does the womensweeklyfood.com.au Fish and Chips recipe contain sulfites?"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "The selected LLM provider, model and credentials are configured; generation can incur service charges.",
+            "This component has been ingested into the same indexes its environment selects for querying.",
+            "The baseline-bm25-rag NER service is running with its spaCy model installed."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_inference"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Completed normally; assess the stated success conditions and limitations.",
+              "1": "Unhandled configuration, dependency, runtime, or assertion failure.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "An ANSWER section and the retrieved evidence sections are printed."
+            ],
+            "limitations": [
+              "BM25 and recipe-vector TransportError responses can become empty hits; an LLM answer and exit 0 do not prove successful retrieval.",
+              "Answers are not checked for factual correctness; inspect returned source records.",
+              "NER failures remove entity boosting but do not stop BM25 or generation."
+            ]
+          }
+        },
+        {
+          "id": "validate",
+          "cwd": "scripts/baseline-bm25-rag",
+          "argv": [
+            "python",
+            "-m",
+            "src.validate"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "The selected LLM provider, model and credentials are configured; generation can incur service charges.",
+            "This component has been ingested into the same indexes its environment selects for querying.",
+            "The unchanged curated recipe sample and expected embedding model are used.",
+            "Python assertions enabled; do not set PYTHONOPTIMIZE or use -O.",
+            "The baseline-bm25-rag NER service is running with its spaCy model installed."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_inference"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "All assertions completed; apply the stated limitations.",
+              "1": "A dependency, configuration, runtime, or assertion failure occurred."
+            },
+            "success": [
+              "Two PASS lines confirm NER availability and retrieval of both same-named recipes for both questions."
+            ],
+            "limitations": [
+              "This is a live integration smoke test, not an offline check.",
+              "Runs two LLM generations; a nonempty answer does not verify its factual contents."
+            ]
+          }
+        }
+      ],
+      "acceptance": [
+        "The NER service is reachable and the BM25 baseline index is populated.",
+        "Both Fish and Chips sources occur in the retrieved results for the original questions.",
+        "The live smoke test passes; inspect generated answers against retrieved text."
+      ]
+    },
+    {
+      "id": "hybrid-rag-native",
+      "number": 4,
+      "title": "Hybrid RAG (Native)",
+      "goal": "Combine BM25 and kNN scores inside one OpenSearch hybrid query and search pipeline.",
+      "docs": "tasks/hybrid-rag-native.md",
+      "reference": "references/hybrid-rag-native.md",
+      "troubleshooting": "troubleshooting/hybrid-rag-native.md",
+      "concepts": [
+        "concepts/BM25_VS_KNN.md",
+        "concepts/CHOOSING_RETRIEVAL.md",
+        "concepts/EMBEDDING_MODELS.md"
+      ],
+      "requires": [
+        "setup-environment"
+      ],
+      "source_files": [
+        "scripts/hybrid-rag-native/Makefile",
+        "scripts/hybrid-rag-native/src/__init__.py",
+        "scripts/hybrid-rag-native/src/ingest.py",
+        "scripts/hybrid-rag-native/src/query.py",
+        "scripts/hybrid-rag-native/src/validate.py"
+      ],
+      "commands": [
+        {
+          "id": "ingest",
+          "cwd": "scripts/hybrid-rag-native",
+          "argv": [
+            "python",
+            "-m",
+            "src.ingest"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "Target indexes are identified for creation or document replacement."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download",
+            "index_write",
+            "cluster_config_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Completed normally; assess the stated success conditions and limitations.",
+              "1": "Unhandled configuration, dependency, runtime, or assertion failure.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "The hybrid index and hybrid-search-pipeline are created or updated, and the unchanged sample logs 260 ingested recipes."
+            ],
+            "limitations": [
+              "Writes by recipe_id replace matching documents; records removed from a later data file are not deleted.",
+              "Existing indexes are not checked or migrated for mapping or embedding-dimension compatibility.",
+              "The cluster needs hybrid-query/search-pipeline support.",
+              "The fixed hybrid-search-pipeline name is shared by the cluster; the next query resets any custom ingestion weights to 0.3/0.7."
+            ]
+          }
+        },
+        {
+          "id": "query",
+          "cwd": "scripts/hybrid-rag-native",
+          "argv": [
+            "python",
+            "-m",
+            "src.query",
+            "--question",
+            "Does the womensweeklyfood.com.au Fish and Chips recipe contain sulfites?"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "The selected LLM provider, model and credentials are configured; generation can incur service charges.",
+            "This component has been ingested into the same indexes its environment selects for querying."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download",
+            "model_inference",
+            "index_write",
+            "cluster_config_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Completed normally; assess the stated success conditions and limitations.",
+              "1": "Unhandled configuration, dependency, runtime, or assertion failure.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "An ANSWER section and the retrieved evidence sections are printed."
+            ],
+            "limitations": [
+              "A normal exit does not establish factual answer correctness.",
+              "Every query PUTs the fixed hybrid-search-pipeline with weights 0.3/0.7 and creates its index if missing.",
+              "Native hit dictionaries retain OpenSearch _source/_score nesting.",
+              "This branch has no explicit require/exclude CLI filters."
+            ]
+          }
+        },
+        {
+          "id": "validate",
+          "cwd": "scripts/hybrid-rag-native",
+          "argv": [
+            "python",
+            "-m",
+            "src.validate"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "The selected LLM provider, model and credentials are configured; generation can incur service charges.",
+            "This component has been ingested into the same indexes its environment selects for querying.",
+            "The unchanged curated recipe sample and expected embedding model are used.",
+            "Python assertions enabled; do not set PYTHONOPTIMIZE or use -O."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download",
+            "model_inference",
+            "index_write",
+            "cluster_config_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "All assertions completed; apply the stated limitations.",
+              "1": "A dependency, configuration, runtime, or assertion failure occurred."
+            },
+            "success": [
+              "One PASS line confirms a nonempty answer and each named source in the first two hits for both questions."
+            ],
+            "limitations": [
+              "This is a live integration smoke test, not an offline check.",
+              "Runs two LLM generations and writes the shared search pipeline for each question."
+            ]
+          }
+        }
+      ],
+      "acceptance": [
+        "The cluster supports the native hybrid query and normalization pipeline.",
+        "For the original sample, the named recipe appears in each question's first two hits.",
+        "The live smoke test passes without an NER service."
+      ]
+    },
+    {
+      "id": "hybrid-rag-ner-rerank",
+      "number": 5,
+      "title": "Hybrid RAG (NER + Rerank)",
+      "goal": "Ground with BM25 and explicit metadata filters, then refine the eligible candidate IDs with vector search.",
+      "docs": "tasks/hybrid-rag-ner-rerank.md",
+      "reference": "references/hybrid-rag-ner-rerank.md",
+      "troubleshooting": "troubleshooting/hybrid-rag-ner-rerank.md",
+      "concepts": [
+        "concepts/BM25_VS_KNN.md",
+        "concepts/CHOOSING_RETRIEVAL.md",
+        "concepts/NER_IN_RETRIEVAL.md"
+      ],
+      "requires": [
+        "setup-environment"
+      ],
+      "source_files": [
+        "scripts/hybrid-rag-ner-rerank/Makefile",
+        "scripts/hybrid-rag-ner-rerank/src/__init__.py",
+        "scripts/hybrid-rag-ner-rerank/src/ingest.py",
+        "scripts/hybrid-rag-ner-rerank/src/query.py",
+        "scripts/hybrid-rag-ner-rerank/src/validate.py"
+      ],
+      "commands": [
+        {
+          "id": "ingest",
+          "cwd": "scripts/hybrid-rag-ner-rerank",
+          "argv": [
+            "python",
+            "-m",
+            "src.ingest"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "Target indexes are identified for creation or document replacement.",
+            "The baseline-bm25-rag NER service is running with its spaCy model installed."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download",
+            "index_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Completed normally; assess the stated success conditions and limitations.",
+              "1": "Unhandled configuration, dependency, runtime, or assertion failure.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "The unchanged sample logs 260 recipes written to each selected recipe index."
+            ],
+            "limitations": [
+              "Writes by recipe_id replace matching documents; records removed from a later data file are not deleted.",
+              "Existing indexes are not checked or migrated for mapping or embedding-dimension compatibility.",
+              "Both indexes must contain matching recipe IDs and normalized metadata; writes are not atomic across them.",
+              "Every document is written with tier=hot; rerunning this ingest after governance replaces its hot/lt assignments."
+            ]
+          }
+        },
+        {
+          "id": "query",
+          "cwd": "scripts/hybrid-rag-ner-rerank",
+          "argv": [
+            "python",
+            "-m",
+            "src.query",
+            "--question",
+            "Suggest a British fish and chips recipe.",
+            "--exclude",
+            "allergen=Sulfites"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "The selected LLM provider, model and credentials are configured; generation can incur service charges.",
+            "This component has been ingested into the same indexes its environment selects for querying.",
+            "The baseline-bm25-rag NER service is running with its spaCy model installed."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download",
+            "model_inference"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Completed normally; assess the stated success conditions and limitations.",
+              "1": "Unhandled configuration, dependency, runtime, or assertion failure.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "An ANSWER section and the retrieved evidence sections are printed."
+            ],
+            "limitations": [
+              "BM25 and recipe-vector TransportError responses can become empty hits; an LLM answer and exit 0 do not prove successful retrieval.",
+              "Answers are not checked for factual correctness; inspect returned source records.",
+              "The example explicitly excludes the normalized sulfites caution; natural-language negation is not converted to a filter.",
+              "The outer bool filter operates on an ANN candidate pool and may return fewer than top-k eligible hits.",
+              "This refinement is a second kNN query, not a cross-encoder or LLM reranker."
+            ]
+          }
+        },
+        {
+          "id": "validate",
+          "cwd": "scripts/hybrid-rag-ner-rerank",
+          "argv": [
+            "python",
+            "-m",
+            "src.validate"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "The selected LLM provider, model and credentials are configured; generation can incur service charges.",
+            "This component has been ingested into the same indexes its environment selects for querying.",
+            "The unchanged curated recipe sample and expected embedding model are used.",
+            "Python assertions enabled; do not set PYTHONOPTIMIZE or use -O.",
+            "The baseline-bm25-rag NER service is running with its spaCy model installed."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download",
+            "model_inference"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "All assertions completed; apply the stated limitations.",
+              "1": "A dependency, configuration, runtime, or assertion failure occurred."
+            },
+            "success": [
+              "Two PASS lines confirm grounding/refinement and the sulfite exclusion in both phases."
+            ],
+            "limitations": [
+              "This is a live integration smoke test, not an offline check.",
+              "Runs two LLM generations.",
+              "Filter validation is against indexed metadata, not an independently verified allergen source."
+            ]
+          }
+        }
+      ],
+      "acceptance": [
+        "Both recipe indexes contain the same recipe IDs and matching filter metadata.",
+        "The explicit sulfites exclusion removes matching records from grounding and refinement.",
+        "The live smoke test passes; rerun governance ingestion before using governance if this task replaced its tiers."
+      ]
+    },
+    {
+      "id": "governance-tiering",
+      "number": 6,
+      "title": "Governance Tiering",
+      "goal": "Search hot-tier evidence first, escalate by explicit policy, cite retrieved handles and attempt a per-query audit write.",
+      "docs": "tasks/governance-tiering.md",
+      "reference": "references/governance-tiering.md",
+      "troubleshooting": "troubleshooting/governance-tiering.md",
+      "concepts": [
+        "concepts/CHOOSING_RETRIEVAL.md",
+        "concepts/NER_IN_RETRIEVAL.md",
+        "concepts/BM25_VS_KNN.md"
+      ],
+      "requires": [
+        "setup-environment"
+      ],
+      "source_files": [
+        "scripts/governance-tiering/Makefile",
+        "scripts/governance-tiering/src/__init__.py",
+        "scripts/governance-tiering/src/ingest.py",
+        "scripts/governance-tiering/src/query.py",
+        "scripts/governance-tiering/src/validate.py"
+      ],
+      "commands": [
+        {
+          "id": "ingest",
+          "cwd": "scripts/governance-tiering",
+          "argv": [
+            "python",
+            "-m",
+            "src.ingest"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "Target indexes are identified for creation or document replacement.",
+            "The baseline-bm25-rag NER service is running with its spaCy model installed."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download",
+            "index_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Completed normally; assess the stated success conditions and limitations.",
+              "1": "Unhandled configuration, dependency, runtime, or assertion failure.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "The unchanged sample logs 260 indexed recipes with hot=209, lt=51, and the audit index exists."
+            ],
+            "limitations": [
+              "Writes by recipe_id replace matching documents; records removed from a later data file are not deleted.",
+              "Existing indexes are not checked or migrated for mapping or embedding-dimension compatibility.",
+              "Both indexes must contain matching recipe IDs and normalized metadata; writes are not atomic across them.",
+              "Uses the same recipe indexes as NER/rerank, replacing its placeholder tier field."
+            ]
+          }
+        },
+        {
+          "id": "query",
+          "cwd": "scripts/governance-tiering",
+          "argv": [
+            "python",
+            "-m",
+            "src.query",
+            "--question",
+            "Does the womensweeklyfood.com.au Fish and Chips recipe contain sulfites?"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "The selected LLM provider, model and credentials are configured; generation can incur service charges.",
+            "This component has been ingested into the same indexes its environment selects for querying.",
+            "The baseline-bm25-rag NER service is running with its spaCy model installed."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download",
+            "model_inference",
+            "index_write",
+            "audit_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Completed normally; assess the stated success conditions and limitations.",
+              "1": "Unhandled configuration, dependency, runtime, or assertion failure.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "An ANSWER section and the retrieved evidence sections are printed."
+            ],
+            "limitations": [
+              "BM25 and recipe-vector TransportError responses can become empty hits; an LLM answer and exit 0 do not prove successful retrieval.",
+              "Answers are not checked for factual correctness; inspect returned source records.",
+              "Creates the audit index when absent and attempts an audit document containing the question and generated answer.",
+              "Audit TransportError is logged and suppressed; a returned answer does not prove audit persistence.",
+              "Citation validation detects invented handles only; an uncited or factually incorrect answer can pass the runtime check.",
+              "REFINE_ANN_POOL=300 is tuned for the 260-record sample, not arbitrary corpus scale."
+            ]
+          }
+        },
+        {
+          "id": "validate",
+          "cwd": "scripts/governance-tiering",
+          "argv": [
+            "python",
+            "-m",
+            "src.validate"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "The selected LLM provider, model and credentials are configured; generation can incur service charges.",
+            "This component has been ingested into the same indexes its environment selects for querying.",
+            "The unchanged curated recipe sample and expected embedding model are used.",
+            "Python assertions enabled; do not set PYTHONOPTIMIZE or use -O.",
+            "The baseline-bm25-rag NER service is running with its spaCy model installed."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "model_download",
+            "model_inference",
+            "index_write",
+            "audit_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "All assertions completed; apply the stated limitations.",
+              "1": "A dependency, configuration, runtime, or assertion failure occurred."
+            },
+            "success": [
+              "Four PASS lines cover two deterministic checks, a hot-only answer and an escalated LT answer with valid citation handles."
+            ],
+            "limitations": [
+              "This is a live integration smoke test, not an offline check.",
+              "Runs two LLM generations and attempts two audit writes.",
+              "The audit records are not read back to establish persistence by this smoke test."
+            ]
+          }
+        }
+      ],
+      "acceptance": [
+        "The sample is indexed with 209 hot and 51 lt recipes.",
+        "The womensweeklyfood.com.au example stays hot-only; the thegratefulgirlcooks.com example escalates.",
+        "Evidence handles and cited handles correspond in the demonstration; independently verify audit persistence when required.",
+        "The live smoke test passes under the original policy and sample."
+      ]
+    },
+    {
+      "id": "operationalize-production",
+      "number": 7,
+      "title": "Operationalize Production",
+      "goal": "Inspect governance signals, check numeric policy drift and demonstrate audit-index retention management.",
+      "docs": "tasks/operationalize-production.md",
+      "reference": "references/operationalize-production.md",
+      "troubleshooting": "troubleshooting/operationalize-production.md",
+      "concepts": [
+        "concepts/NER_IN_RETRIEVAL.md",
+        "concepts/CHOOSING_RETRIEVAL.md"
+      ],
+      "requires": [
+        "setup-environment",
+        "governance-tiering"
+      ],
+      "source_files": [
+        "scripts/operationalize-production/Makefile",
+        "scripts/operationalize-production/src/__init__.py",
+        "scripts/operationalize-production/src/monitor.py",
+        "scripts/operationalize-production/src/policy_registry.py",
+        "scripts/operationalize-production/src/validate.py",
+        "scripts/operationalize-production/src/policy_history.json",
+        "scripts/operationalize-production/src/hardening/bedrock_invoke_policy.json",
+        "scripts/operationalize-production/src/hardening/opensearch_roles.json"
+      ],
+      "commands": [
+        {
+          "id": "monitor",
+          "cwd": "scripts/operationalize-production",
+          "argv": [
+            "python",
+            "-m",
+            "src.monitor"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "The baseline-bm25-rag NER service is running with its spaCy model installed.",
+            "Governance queries have written audit records to the selected audit index."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "No evaluated governance or NER alerts; does not prove the audit query succeeded.",
+              "1": "An alert or unhandled configuration/runtime failure occurred.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "Prints governance counts/rates and NER health; reports alert details when thresholds or citation checks fail."
+            ],
+            "limitations": [
+              "An empty window is not an alert.",
+              "A failed audit search returns zeroed statistics with an error field that monitor currently ignores; healthy NER can still produce exit 0.",
+              "Monitoring reads records and probes NER; it does not apply retention, deploy roles or schedule itself."
+            ]
+          }
+        },
+        {
+          "id": "check-policy",
+          "cwd": "scripts/operationalize-production",
+          "argv": [
+            "python",
+            "-m",
+            "src.policy_registry"
+          ],
+          "prerequisites": [
+            "Dependencies installed and the intended threshold configuration and policy history selected."
+          ],
+          "effects": [
+            "local_read",
+            "local_write"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Configured numeric thresholds match the history.",
+              "1": "Drift or an unhandled configuration/history failure occurred.",
+              "2": "Argument parsing failed."
+            },
+            "success": [
+              "Prints OK when TIER_MIN_HOT_SCORE and TIER_MIN_HOT_CANDIDATES match the latest recorded version."
+            ],
+            "limitations": [
+              "Does not write history or verify approval identity, the qualitative tier rule, remote configuration or deployment."
+            ]
+          }
+        },
+        {
+          "id": "validate",
+          "cwd": "scripts/operationalize-production",
+          "argv": [
+            "python",
+            "-m",
+            "src.validate"
+          ],
+          "prerequisites": [
+            "Shared dependencies installed and the required OpenSearch settings configured.",
+            "Python assertions enabled; do not set PYTHONOPTIMIZE or use -O.",
+            "The exact audit index and fixed retention-policy ID have been reviewed for this run.",
+            "Applying a policy that deletes the entire audit index when its index age reaches the configured threshold is intended."
+          ],
+          "effects": [
+            "local_read",
+            "local_write",
+            "network_read",
+            "index_write",
+            "cluster_config_write",
+            "retention_delete"
+          ],
+          "result": {
+            "format": "human_text",
+            "exit_codes": {
+              "0": "Assertions completed; inspect PASS versus SKIP before claiming retention is applied.",
+              "1": "A dependency, configuration, runtime, or assertion failure occurred."
+            },
+            "success": [
+              "Two deterministic checks pass, the retention operation reports PASS or SKIP, and live statistics pass shape checks."
+            ],
+            "limitations": [
+              "This live validation creates the audit index and attempts to PUT and attach an ISM policy twice.",
+              "Retention deletes the whole index based on min_index_age, not individual expired records.",
+              "The fixed recipes-audit-log-retention policy ID may already govern another target; an existing policy is not reconciled.",
+              "ISM unavailability or restriction can produce SKIP and exit 0; retention is not thereby established.",
+              "No LLM call, NER probe, infrastructure deployment or access-control enforcement occurs in this validation."
+            ]
+          }
+        }
+      ],
+      "acceptance": [
+        "Evaluate real audit data and NER health, including reported transport failures.",
+        "The configured numeric policy matches an intentionally maintained history or documented drift is investigated.",
+        "If live retention validation is authorized, distinguish applied retention from a SKIP.",
+        "Treat access control, backup/restore, monitoring schedules and response policies as manual/future work."
+      ]
+    }
+  ]
+}
