@@ -1,0 +1,4 @@
+interface:
+  display_name: "Instaclustr RAG Builder"
+  short_description: "Build RAG projects from the Instaclustr workshop"
+  default_prompt: "Use $instaclustr-rag-builder to adapt this workshop into a RAG project for my corpus."

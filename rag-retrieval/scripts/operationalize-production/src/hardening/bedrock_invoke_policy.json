@@ -1,0 +1,16 @@
+{
+  "_comment": "Illustrative IAM policy, NOT applied automatically by any script in this repo. Replace REGION and MODEL_ID with your .env's AWS_REGION / BEDROCK_MODEL_ID, then attach this to the IAM role/user this codebase actually authenticates as, in place of a broad bedrock:InvokeModel grant over '*'.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeSpecificBedrockModelOnly",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:REGION::foundation-model/MODEL_ID"
+      ]
+    }
+  ]
+}

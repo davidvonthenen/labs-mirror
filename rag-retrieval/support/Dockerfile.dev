@@ -1,0 +1,87 @@
+# Copyright 2026 NetApp Instaclustr contributors. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Linux image: builds natively on linux/amd64 and linux/arm64.
+# Windows and macOS run this Linux image through their container engine's VM.
+ARG PYTHON_VERSION=3.12
+FROM docker.io/library/python:${PYTHON_VERSION}-slim-bookworm
+
+# The publisher sets these constants in docker-compose.yml, not in a secret file.
+ARG LAB_REPO_URL=https://github.com/instaclustr/labs
+ARG LAB_REPO_REF=main
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:${PATH}" \
+    HF_HOME=/home/lab/.cache/huggingface \
+    LAB_REPO_DIR=/workspace/rag-retrieval \
+    LAB_CONTAINER=true \
+    EMBEDDING_DEVICE=cpu \
+    EMBEDDING_TORCH_DTYPE=float32 \
+    PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
+    GIT_TERMINAL_PROMPT=0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       bash build-essential ca-certificates curl git libgomp1 tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m venv /opt/venv \
+    && useradd --create-home --uid 1000 --shell /bin/bash lab \
+    && mkdir -p /opt/lab /workspace/rag-retrieval /home/lab/.cache/huggingface \
+    && chown -R lab:lab /workspace /home/lab/.cache
+
+# Fail before a large dependency download if the publisher has not set the repo.
+# Credentials must never be embedded in a Git URL, build ARG, or image layer.
+RUN LAB_REPO_URL="${LAB_REPO_URL}" python -c \
+    'import os, urllib.parse; u=os.environ["LAB_REPO_URL"]; p=urllib.parse.urlsplit(u); assert p.scheme=="https" and p.hostname and not p.username and not p.password and not p.query and not p.fragment and "REPLACE_" not in u, "Set the public HTTPS LAB_REPO_URL constant in docker-compose.yml before publishing this lab."'
+
+# Sparse checkout the exact target path to minimize container size, then discard .git
+RUN git clone --filter=blob:none --no-checkout "${LAB_REPO_URL}" /tmp/repo \
+    && git -C /tmp/repo sparse-checkout set rag-retrieval \
+    && git -C /tmp/repo checkout "${LAB_REPO_REF}" \
+    && git -C /tmp/repo rev-parse HEAD > /opt/lab/repository-revision.txt \
+    && mv /tmp/repo/rag-retrieval /opt/lab/repository \
+    && rm -rf /tmp/repo
+
+# copy the local .env file into the following directories:
+COPY .env /opt/lab/repository/.env
+
+COPY requirements.txt /opt/lab/requirements.txt
+# Install CPU Torch first to avoid downloading an unused CUDA runtime on AMD64.
+# The second install retains that satisfying Torch version. No version pins are relaxed.
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir --only-binary=:all: \
+       --index-url https://download.pytorch.org/whl/cpu 'torch>=2.7,<3' \
+    && python -m pip install --no-cache-dir -r /opt/lab/requirements.txt \
+    && python -m spacy download en_core_web_sm \
+    && python -m pip check \
+    && python -c "import spacy; spacy.load('en_core_web_sm')" \
+    && python -m pip freeze > /opt/lab/installed-requirements.txt
+
+# Keep the task pages' source .venv/bin/activate commands valid in the image.
+# RUN ln -s /opt/venv /opt/lab/repository/.venv \
+#    && test -f /opt/lab/repository/support/validate_setup.py \
+#    && test -f /opt/lab/repository/support/recipes/recipes_sample.json \
+#    && cd /opt/lab/repository \
+#    && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1 > /opt/lab/repository-revision.txt
+
+# copy the environment validation scripts
+COPY runtime_health.py container-entrypoint.sh /opt/lab
+# COPY validate_setup.py runtime_health.py container-entrypoint.sh /opt/lab
+# COPY ./common/config.py ./common/embeddings.py ./common/labels.py ./common/llm_client.py \
+#      ./common/logging.py ./common/ner_client.py ./common/opensearch_client.py /opt/lab/common
+
+# Normalize the entrypoint even when checked out by a Windows Git client.
+RUN sed -i 's/\r$//' /opt/lab/container-entrypoint.sh \
+    && chmod 755 /opt/lab/container-entrypoint.sh \
+    && chown -R lab:lab /opt/lab /opt/venv
+
+USER lab
+WORKDIR /workspace/rag-retrieval
+EXPOSE 8088 10000
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=4 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/healthz', timeout=3).close()"
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/lab/container-entrypoint.sh"]
+CMD ["python", "/opt/lab/runtime_health.py"]

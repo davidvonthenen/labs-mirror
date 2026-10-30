@@ -3,7 +3,8 @@
 
 # Linux image: builds natively on linux/amd64 and linux/arm64.
 # Windows and macOS run this Linux image through their container engine's VM.
-FROM docker.io/library/python:3.12-slim-bookworm
+ARG PYTHON_VERSION=3.12
+FROM docker.io/library/python:${PYTHON_VERSION}-slim-bookworm
 
 # The publisher sets these constants in docker-compose.yml, not in a secret file.
 ARG LAB_REPO_URL=https://github.com/davidvonthenen/agentic-lab
@@ -75,8 +76,18 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip check \
     && python -m pip freeze > /opt/lab/installed-requirements.txt
 
+# Keep the task pages' source .venv/bin/activate commands valid in the image.
+# RUN ln -s /opt/venv /opt/lab/repository/.venv \
+#    && test -f /opt/lab/repository/support/validate_setup.py \
+#    && test -f /opt/lab/repository/support/recipes/recipes_sample.json \
+#    && cd /opt/lab/repository \
+#    && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1 > /opt/lab/repository-revision.txt
+
 # copy the environment validation scripts
 COPY validate_setup.py runtime_health.py container-entrypoint.sh /opt/lab/
+RUN sed -i 's/\r$//' /opt/lab/container-entrypoint.sh \
+    && chmod 755 /opt/lab/container-entrypoint.sh \
+    && chown -R lab:lab /opt/lab /opt/venv
 
 # Normalize the entrypoint even when checked out by a Windows Git client.
 RUN sed -i 's/\r$//' /opt/lab/container-entrypoint.sh \
