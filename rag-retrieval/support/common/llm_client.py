@@ -95,12 +95,6 @@ def _generate_openai(
         "messages": messages,
         "max_completion_tokens": int(max_tokens if max_tokens is not None else settings.bedrock_max_tokens),
     }
-    # GPT-6 defaults to reasoning, which does not accept temperature. Other
-    # OpenAI-compatible models retain the lab's existing sampling setting.
-    if not settings.openai_model.startswith("gpt-6"):
-        body["temperature"] = float(
-            temperature if temperature is not None else settings.bedrock_temperature
-        )
 
     # Keep the SDK optional at import time for callers using only Bedrock.
     from openai import OpenAI
