@@ -12,5 +12,7 @@ boto3>=1.34
 sentence-transformers>=3.0.0
 tqdm>=4.66
 # Let pip select a compatible NumPy for each Python version, including NumPy 2.
-# broken: numpy>=1.26.4,<3.0
-numpy<2.0
+numpy>=1.26.4,<3.0
+torch==2.4.1
+torchvision==0.19.1
+torchaudio==2.4.1
