@@ -1,0 +1,383 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RAG Retrieval local lab manifest version 1",
+  "description": "Describes files and existing commands for discovery. It is not an executable runner, deployment specification, or cross-repository CLI protocol.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "const": "lab.schema.json"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "lab_id": {
+      "const": "rag-retrieval"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entrypoints": {
+      "type": "object",
+      "properties": {
+        "human": {
+          "$ref": "#/$defs/path"
+        },
+        "instructions": {
+          "$ref": "#/$defs/path"
+        },
+        "skill": {
+          "$ref": "#/$defs/path"
+        },
+        "adaptation": {
+          "$ref": "#/$defs/path"
+        },
+        "architecture": {
+          "$ref": "#/$defs/path"
+        },
+        "contracts": {
+          "$ref": "#/$defs/path"
+        }
+      },
+      "required": [
+        "human",
+        "instructions",
+        "skill",
+        "adaptation",
+        "architecture",
+        "contracts"
+      ],
+      "additionalProperties": false
+    },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "python": {
+          "type": "object",
+          "properties": {
+            "minimum": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recommended": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "minimum",
+            "recommended"
+          ],
+          "additionalProperties": false
+        },
+        "requirements": {
+          "$ref": "#/$defs/path"
+        },
+        "config_example": {
+          "$ref": "#/$defs/path"
+        },
+        "config_loader": {
+          "$ref": "#/$defs/path"
+        }
+      },
+      "required": [
+        "python",
+        "requirements",
+        "config_example",
+        "config_loader"
+      ],
+      "additionalProperties": false
+    },
+    "shared_sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/path"
+      },
+      "uniqueItems": true
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/resource"
+      },
+      "minItems": 1
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/task"
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "$schema",
+    "schema_version",
+    "lab_id",
+    "title",
+    "entrypoints",
+    "environment",
+    "shared_sources",
+    "resources",
+    "tasks"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path relative to the lab root; use . for the lab-root command cwd. Must stay inside that root."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "resource": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "enum": [
+            "opensearch_index",
+            "search_pipeline",
+            "ism_policy",
+            "embedding_model",
+            "local_service",
+            "model_endpoint"
+          ]
+        },
+        "env": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "description": "Actual environment variable selecting this resource, or null for a fixed code constant."
+        },
+        "default": {
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        },
+        "used_by": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "defined_in": {
+          "$ref": "#/$defs/path"
+        },
+        "lifecycle": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "env",
+        "default",
+        "used_by",
+        "defined_in",
+        "lifecycle"
+      ],
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "human_text",
+          "description": "Existing command stdout/log interface; any service HTTP JSON response is described separately."
+        },
+        "exit_codes": {
+          "type": "object",
+          "minProperties": 1,
+          "patternProperties": {
+            "^[0-9]+$": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "success": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "format",
+        "exit_codes",
+        "success",
+        "limitations"
+      ],
+      "additionalProperties": false
+    },
+    "command": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "cwd": {
+          "$ref": "#/$defs/path"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "description": "Literal argument vector for an existing command; contains no shell interpolation. Discovery does not authorize or execute it."
+        },
+        "prerequisites": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "effects": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "local_read",
+              "local_write",
+              "dependency_install",
+              "network_read",
+              "model_download",
+              "model_inference",
+              "service_start",
+              "index_write",
+              "cluster_config_write",
+              "audit_write",
+              "retention_delete"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 1,
+          "description": "Possible effects, including conditional resource creation, downloads and future deletion caused by attaching retention."
+        },
+        "result": {
+          "$ref": "#/$defs/result"
+        }
+      },
+      "required": [
+        "id",
+        "cwd",
+        "argv",
+        "prerequisites",
+        "effects",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "task": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "docs": {
+          "$ref": "#/$defs/path"
+        },
+        "reference": {
+          "$ref": "#/$defs/path"
+        },
+        "troubleshooting": {
+          "$ref": "#/$defs/path"
+        },
+        "concepts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/path"
+          },
+          "uniqueItems": true
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "source_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/path"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/command"
+          },
+          "minItems": 1
+        },
+        "acceptance": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "id",
+        "number",
+        "title",
+        "goal",
+        "docs",
+        "reference",
+        "troubleshooting",
+        "concepts",
+        "requires",
+        "source_files",
+        "commands",
+        "acceptance"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

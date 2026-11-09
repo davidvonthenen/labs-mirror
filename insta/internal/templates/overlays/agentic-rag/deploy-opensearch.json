@@ -1,0 +1,45 @@
+{
+  "alertingPlugin": false,
+  "anomalyDetectionPlugin": false,
+  "asynchronousSearchPlugin": false,
+  "clusterManagerNodes": [
+    {
+      "dedicatedManager": true,
+      "nodeSize": "SRH-DM-DEV-t4g.small-5"
+    }
+  ],
+  "dataCentres": [
+    {
+      "cloudProvider": "AWS_VPC",
+      "name": "AWS_VPC_US_EAST_1",
+      "network": "10.0.0.0/16",
+      "numberOfRacks": 3,
+      "privateLink": false,
+      "region": "US_EAST_1"
+    }
+  ],
+  "dataNodes": [
+    {
+      "nodeCount": 3,
+      "nodeSize": "SRH-DEV-t4g.medium-30"
+    }
+  ],
+  "icuPlugin": false,
+  "indexManagementPlugin": true,
+  "aiSearchPlugin": true,
+  "knnPlugin": true,
+  "loadBalancer": true,
+  "name": "ICLabs_RAG-Retrieval",
+  "notificationsPlugin": false,
+  "opensearchDashboards": [
+    {
+      "nodeSize": "SRH-DEV-t4g.small-30"
+    }
+  ],
+  "opensearchVersion": "3.6.0",
+  "pciComplianceMode": false,
+  "privateNetworkCluster": false,
+  "reportingPlugin": false,
+  "slaTier": "NON_PRODUCTION",
+  "sqlPlugin": false
+}

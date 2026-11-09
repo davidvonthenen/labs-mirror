@@ -1,0 +1,160 @@
+schema_version: 1
+id: agentic-rag
+name: Agentic RAG
+instructions: AGENTS.md
+runtime:
+  kind: python
+  python: "3.12"
+  requirements: support/requirements.txt
+config:
+  OPENSEARCH_HOST: {type: string}
+  OPENSEARCH_PORT: {type: integer, default: "9200"}
+  OPENSEARCH_USER: {type: string}
+  OPENSEARCH_PASS: {type: string, secret: true}
+  OPENSEARCH_SSL: {type: boolean, default: "true"}
+  OPENSEARCH_INDEX:
+    type: string
+    description: Leave unset to preserve the distinct news and financial index defaults.
+  EMBEDDING_MODEL: {type: string, default: Qwen/Qwen3-Embedding-0.6B}
+  USE_EXTERNAL_AI: {type: boolean, default: "true", enum: ["true"]}
+  USE_EXTERNAL_OPENAI: {type: boolean, default: "true", enum: ["true"]}
+  OPENAI_API_KEY: {type: string, secret: true}
+  OPENAI_MODEL: {type: string, default: gpt-5.4}
+  EXTERNAL_ORCH_MAX_TOKENS: {type: integer, default: "127000"}
+  EXTERNAL_LLM_MAX_TOKENS: {type: integer, default: "127000"}
+  TAVILY_API_KEY: {type: string, secret: true}
+  FINNHUB_API_KEY: {type: string, secret: true}
+  A2A_HOST: {type: string, default: 127.0.0.1}
+  FINANCIALS_AGENT_HOST: {type: string, default: 127.0.0.1}
+  FINANCIALS_MCP_HOST: {type: string, default: 127.0.0.1}
+  ORCHESTRATOR_HOST: {type: string, default: 127.0.0.1}
+platforms:
+  opensearch:
+    provider: instaclustr-opensearch
+    request: deploy-opensearch.json
+services:
+  tavily-mcp:
+    cwd: scripts/news-agent
+    command: [python, -m, src.tavily_mcp_server]
+    environment:
+      required: [TAVILY_API_KEY]
+    probe:
+      url: http://127.0.0.1:8765/mcp
+      method: POST
+      body: '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"insta-readiness","version":"1"}}}'
+  news-agent:
+    cwd: scripts/news-agent
+    command: [python, -m, src.news_agent]
+    requires: {platforms: [opensearch], services: [tavily-mcp]}
+    environment:
+      required: [OPENSEARCH_HOST, OPENSEARCH_USER, OPENSEARCH_PASS, OPENAI_API_KEY, OPENAI_MODEL]
+    probe: {url: http://127.0.0.1:9001/health}
+  finnhub-mcp:
+    cwd: scripts/financials-agent
+    command: [python, -m, src.financials_agent.finnhub_server]
+    environment:
+      required: [FINNHUB_API_KEY]
+    probe:
+      url: http://127.0.0.1:8766/mcp
+      method: POST
+      body: '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"insta-readiness","version":"1"}}}'
+  financials-agent:
+    cwd: scripts/financials-agent
+    command: [python, -m, src.financials_agent]
+    requires: {platforms: [opensearch], services: [finnhub-mcp]}
+    environment:
+      required: [OPENSEARCH_HOST, OPENSEARCH_USER, OPENSEARCH_PASS, OPENAI_API_KEY, OPENAI_MODEL]
+    probe: {url: http://127.0.0.1:9002/health}
+  orchestrator:
+    cwd: scripts/orchestrator-agent
+    command: [python, -m, src.host_agent]
+    requires: {services: [news-agent, financials-agent]}
+    environment:
+      required: [OPENAI_API_KEY, OPENAI_MODEL]
+    # The source exposes POST only. GET 405 proves route liveness without inference.
+    probe: {url: http://127.0.0.1:10000/v1/chat/completions, status: 405}
+tasks:
+  introduction:
+    blueprint: tasks/introduction.md
+    source: scripts/introduction
+    operations:
+      validate:
+        cwd: .
+        command: [python, -m, compileall, -q, scripts]
+        effects: [local-cache-write]
+        verification: Python syntax only; live search, model access, and teaching assertions remain unverified.
+  news-agent:
+    blueprint: tasks/news-agent.md
+    source: scripts/news-agent
+    services: [news-agent]
+    requires: {platforms: [opensearch]}
+    environment:
+      required: [OPENSEARCH_HOST, OPENSEARCH_USER, OPENSEARCH_PASS]
+      optional: [OPENSEARCH_PORT, OPENSEARCH_SSL, OPENSEARCH_INDEX, EMBEDDING_MODEL]
+    operations:
+      ingest:
+        command: [python, -m, src.ingest]
+        effects: [index-create-if-missing, dataset-replace, index-write, model-cache-write]
+        verification: Requires ai_media_dataset_20250911-1000lines.csv in this source directory; inspect reported article and chunk counts.
+      query:
+        command: [python, -m, src.query, --question, "Summarize Google AI developments using historical news and current reporting, and cite the evidence."]
+        requires: {services: [news-agent]}
+        indexes: [{config: OPENSEARCH_INDEX, default: agenticrag-technews-vector-chunks}]
+        required: [OPENAI_API_KEY, OPENAI_MODEL, TAVILY_API_KEY]
+        effects: [index-read, remote-model-call, remote-search-call, audit-write, model-cache-write]
+        verification: Inspect source citations, current versus historical evidence, release status, and the news audit record.
+  financials-agent:
+    blueprint: tasks/financials-agent.md
+    source: scripts/financials-agent
+    services: [financials-agent]
+    requires: {platforms: [opensearch]}
+    environment:
+      required: [OPENSEARCH_HOST, OPENSEARCH_USER, OPENSEARCH_PASS]
+      optional: [OPENSEARCH_PORT, OPENSEARCH_SSL, OPENSEARCH_INDEX, EMBEDDING_MODEL]
+    operations:
+      ingest:
+        command: [python, -m, src.ingest]
+        effects: [index-create-if-missing, index-write, model-cache-write]
+        verification: Requires text-converted filings under quarterly_filings/; inspect reported document and chunk counts.
+      query:
+        command: [python, -m, src.query, --question, "Describe AAPL recent quarterly financial performance and its current stock price. Separate reporting periods from the quote timestamp and state missing evidence."]
+        requires: {services: [financials-agent]}
+        indexes: [{config: OPENSEARCH_INDEX, default: agenticrag-finfile-vector-chunks}]
+        required: [OPENAI_API_KEY, OPENAI_MODEL, FINNHUB_API_KEY]
+        effects: [index-read, remote-model-call, remote-market-call, audit-write, model-cache-write]
+        verification: Verify the issuer, filing citations, quote timestamp, missing evidence, and financial audit record.
+      audit:
+        command: [python, -m, src.financials_agent.audit, ./logs/financials-audit.jsonl]
+        effects: [local-file-read]
+        verification: A valid chain with zero records does not establish that a financial request completed.
+  orchestrator-agent:
+    blueprint: tasks/orchestrator-agent.md
+    source: scripts/orchestrator-agent
+    services: [orchestrator]
+    operations:
+      audit:
+        command: [python, -m, src.host_agent.audit]
+        effects: [local-file-read]
+        verification: Inspect a nonempty valid chain after a client request; this check does not prove answer correctness.
+  client:
+    blueprint: tasks/client.md
+    source: scripts/client
+    services: [orchestrator]
+    operations:
+      query:
+        mode: interactive
+        command: [python, client.py]
+        requires: {services: [orchestrator]}
+        required: [OPENAI_API_KEY, OPENAI_MODEL, TAVILY_API_KEY, FINNHUB_API_KEY]
+        effects: [index-read, remote-model-call, remote-search-call, remote-market-call, audit-write, model-cache-write]
+        verification: Inspect the answer, evidence boundaries, specialist routing, and audit records; closing the client is not a task pass.
+lifecycle:
+  up:
+    - {platform: opensearch, action: ensure}
+  down:
+    - {service: orchestrator, action: stop}
+    - {service: financials-agent, action: stop}
+    - {service: news-agent, action: stop}
+    - {service: finnhub-mcp, action: stop}
+    - {service: tavily-mcp, action: stop}
+    - {platform: opensearch, action: destroy_owned}
