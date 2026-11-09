@@ -6,6 +6,10 @@ __pycache__/
 *.pyc
 **/commands.txt
 
+# CLI
+bin/
+dist/
+
 # rag retrieval
 .lab-revision
 

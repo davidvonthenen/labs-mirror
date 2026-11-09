@@ -1,0 +1,33 @@
+# Local credentials and configuration; keep the documented example.
+.env
+.env.*
+!support/.env.example
+.aws/
+.secrets/
+
+# Python environments, generated files, and test/tool caches.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.log
+
+# Local editor and operating-system files.
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
