@@ -1,5 +1,0 @@
-/bin/
-/dist/
-/.cache/
-*.test
-coverage.out
