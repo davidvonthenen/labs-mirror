@@ -9,7 +9,6 @@ runtime:
   python: "3.12"
   requirements: support/requirements.txt
   setup:
-    - [python, -m, pip, install, -r, support/requirements-test.txt]
     - [python, -m, spacy, download, en_core_web_sm]
 
 config:
@@ -41,9 +40,6 @@ config:
   PORT: {type: integer, default: "8000", enum: ["8000"]}
   TIER_MIN_HOT_SCORE: {type: number, default: "15.0"}
   TIER_MIN_HOT_CANDIDATES: {type: integer, default: "3"}
-  AUDIT_RETENTION_DAYS: {type: integer, default: "180"}
-  GOVERNANCE_ALERT_LOOKBACK_HOURS: {type: integer, default: "24"}
-  GOVERNANCE_MAX_ESCALATION_RATE: {type: number, default: "0.5"}
 
 platforms:
   opensearch:
@@ -99,10 +95,11 @@ tasks:
         effects: [index-create-if-missing, index-write, model-cache-write]
         verification: "Ingestion exited successfully; query and educational assertions have not run."
       query: &query
+        mode: oneshot
         command: [python, -m, src.query]
         effects: [index-create-if-missing, index-read, remote-model-call, model-cache-write]
         indexes: [{config: OPENSEARCH_VECTOR_RECIPES_BASELINE_INDEX}]
-        verification: "The built-in sample queries exited; inspect their retrieved evidence and answers. Custom questions use the existing Python --question option."
+        verification: "The built-in sample queries exited. Inspect their retrieved evidence and answers. Custom questions use the Python --question option."
       validate: &validate
         command: [python, -m, src.validate]
         effects: [index-create-if-missing, index-read, remote-model-call, model-cache-write]
@@ -131,15 +128,15 @@ tasks:
     operations:
       ingest:
         <<: *ingest
-        effects: [index-write, search-pipeline-write, model-cache-write]
+        effects: [index-write, shared-search-pipeline-write, model-cache-write]
       query:
         <<: *query
         indexes: [{config: OPENSEARCH_HYBRID_INDEX}]
-        effects: [index-read, remote-model-call, model-cache-write]
+        effects: [index-read, shared-search-pipeline-write, remote-model-call, model-cache-write]
       validate:
         <<: *validate
         indexes: [{config: OPENSEARCH_HYBRID_INDEX}]
-        effects: [index-read, remote-model-call, model-cache-write]
+        effects: [index-read, shared-search-pipeline-write, remote-model-call, model-cache-write]
 
   hybrid-rag-ner-rerank:
     blueprint: tasks/hybrid-rag-ner-rerank.md
@@ -176,24 +173,25 @@ tasks:
   operationalize-production:
     blueprint: tasks/operationalize-production.md
     source: scripts/operationalize-production
+    environment:
+      conditional:
+        - operations: [validate]
+          when: {LLM_PROVIDER: openai}
+          required: [OPENAI_API_KEY, OPENAI_MODEL]
+        - operations: [validate]
+          when: {LLM_PROVIDER: bedrock}
+          required: [BEDROCK_MODEL_ID, AWS_REGION]
     operations:
       policy-registry:
         command: [python, -m, src.policy_registry]
         effects: [local-read]
         verification: "Configured tier thresholds match the checked-in policy history."
-      monitor:
-        command: [python, -m, src.monitor]
-        requires: {platforms: [opensearch], services: [ner]}
-        required: [OPENSEARCH_HOST, OPENSEARCH_USER, OPENSEARCH_PASSWORD]
-        effects: [index-read]
-        verification: "The audit search and NER probe completed without evaluated alerts; an empty audit window is not proof of a completed governance exercise."
       validate:
         command: [python, -m, src.validate]
-        requires: {platforms: [opensearch], services: [ner]}
+        requires: {platforms: [opensearch]}
         required: [OPENSEARCH_HOST, OPENSEARCH_USER, OPENSEARCH_PASSWORD]
-        indexes: [{config: OPENSEARCH_AUDIT_INDEX}]
-        effects: [local-read, index-read]
-        verification: "Read-only checks verified current policy thresholds, existing audit data and NER health. Inspect retention PASS/SKIP; this command does not install a deletion policy."
+        effects: [index-read, audit-index-write, shared-retention-policy-write, whole-audit-index-delete-scheduled]
+        verification: "The production checker exited; inspect warnings/skipped ISM checks. Retention may delete the whole audit index."
 
 lifecycle:
   up:

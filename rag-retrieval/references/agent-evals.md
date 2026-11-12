@@ -3,8 +3,6 @@
 Use these cases to check that a coding tool can find the relevant workshop
 source, perform a scoped task, and report evidence accurately. They are a
 review plan, not a record of successful Codex, Claude Code, or Cursor runs.
-Executed checks and client coverage belong in
-[VALIDATION_REPORT.md](../VALIDATION_REPORT.md).
 
 ## How to run a case
 

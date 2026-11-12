@@ -60,11 +60,12 @@ client. Uploading a ZIP alone is not evidence that its instructions activated.
 | [references/lab.schema.json](references/lab.schema.json) | JSON Schema for the task manifest. |
 | [references/agent-contracts.md](references/agent-contracts.md) | Actual runtime interfaces, resource ownership, failures, and command interpretation. |
 | Existing [references/](references/), [concepts/](concepts/), and [troubleshooting/](troubleshooting/) | Exact source maps, explanations, and diagnosis for the selected task. |
-| [scripts/validate_lab.py](scripts/validate_lab.py) and [tests/test_validate_lab.py](tests/test_validate_lab.py) | Offline document/metadata validation and its regression tests. |
+| [scripts/validate_lab.py](scripts/validate_lab.py) | Offline document/metadata validation. The supplied archive omits the checker regression tests. |
 | [references/agent-evals.md](references/agent-evals.md) | Representative agent requests and observable review criteria. |
-| [VALIDATION_REPORT.md](VALIDATION_REPORT.md) | Checks performed for this delivered revision and checks still requiring services or a client. |
 
-`references/lab.json` is discovery metadata for the Python teaching commands; the document checker never executes it. The separate `insta.yaml` describes commands and lifecycle actions for the Go CLI. See [INSTA.md](INSTA.md) for that integration and its pinned-source release boundary.
+`references/lab.json` remains discovery metadata, and the document checker
+never executes its commands. The managed Go CLI reads [insta.yaml](insta.yaml)
+for executable operations; see [INSTA.md](INSTA.md) for that workflow.
 
 ## 2. Check the source package before using services
 
@@ -91,15 +92,9 @@ returns exit `1`; a missing validation dependency returns exit `2`. Fix the
 reported path, contract, or document issue before relying on that metadata.
 This checks structure and discoverability, not live retrieval behavior.
 
-Run the checker's regression tests:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-**Expected:** the tests pass. Their deliberately damaged fixtures must be
-rejected by the checker. These are tests of the new agent-support layer; they
-do not run the workshop against OpenSearch or an LLM.
+The supplied archive does not include `tests/test_validate_lab.py` or its
+`tests/` directory. The checker can run, but its separate regression suite is
+unavailable in this revision; do not report it as executed.
 
 For a new project, work in the destination the user requested. Preserve the
 original workshop for reference. When a complete copy is desired, a filesystem
@@ -118,10 +113,10 @@ instruction to include every architecture in a new application.
 | --- | --- | --- |
 | Meaning-based retrieval over short documents | [Baseline Vector RAG](references/baseline-vector-rag.md) | Semantic similarity does not establish document identity or a hard constraint. |
 | Exact names, identifiers, and keyword matching | [Baseline BM25 RAG](references/baseline-bm25-rag.md) | This implementation includes a local NER score boost; it is not an NER-free BM25 example. |
-| A server-side blend of lexical and semantic signals | [Hybrid RAG (Native)](references/hybrid-rag-native.md) | Uses one index and an OpenSearch search pipeline; ingestion updates its index-derived pipeline, and queries preserve it. |
+| A server-side blend of lexical and semantic signals | [Hybrid RAG (Native)](references/hybrid-rag-native.md) | Uses one index and an OpenSearch search pipeline; the query updates the fixed shared pipeline. |
 | Structured exclusions or requirements before semantic refinement | [Hybrid RAG (NER + Rerank)](references/hybrid-rag-ner-rerank.md) | Two indexes must agree on IDs and metadata. The second phase is kNN refinement, not a cross-encoder. |
 | Priority retrieval, escalation, and an evidence/audit record | [Governance Tiering](references/governance-tiering.md) | Tiers are document labels. Audit writes and citation checks have the limits documented in the source. |
-| Monitoring and policy checks around that audit trail | [Operationalize Production](references/operationalize-production.md) | Adds operational examples; its validation is read-only; retention installation is a separate explicit administration step. |
+| Monitoring and policy checks around that audit trail | [Operationalize Production](references/operationalize-production.md) | Adds operational examples; its retention validation can install whole-index deletion. |
 
 For example, a support-article project with exact error codes and paraphrased
 symptoms can start from the native hybrid task. If the project also requires
@@ -183,7 +178,9 @@ and [runtime contract](references/agent-contracts.md) before ingestion:
   configured environment settings, so keep both destinations aligned.
 - Two-phase retrieval and governance share the same BM25/vector index settings.
   Re-running the former's ingestor resets the governance tiers to `hot`.
-- Native hybrid pipeline and retention-policy names are derived from their configured indexes. Use distinct index names for independent projects and review the ownership of existing resources before changing them.
+- Native hybrid and retention resources have fixed cluster-wide names in the
+  source. A new index suffix does not isolate those resources; explicitly
+  design their ownership before using them in another project.
 - Changed mappings or embedding dimensions require an appropriate new index
   and reindexing plan. Current `ensure_*` helpers do not migrate existing data.
 
@@ -237,7 +234,7 @@ without needing that task's populated index.
 | Tier | Command or evidence | What it establishes |
 | --- | --- | --- |
 | Local source package | `python scripts/validate_lab.py` | Metadata/schema, path, documentation, Skill, and Python syntax checks. No runtime modules are imported or command records executed. |
-| Checker regression | `python -m unittest discover -s tests -v` | The document checker detects the drift cases covered by its tests. |
+| Checker regression | Unavailable in this archive | The documented regression-test directory was not supplied. |
 | Workspace readiness | `python support/validate_setup.py` | Installed dependencies, configuration, and local readiness checks. Read its reference for optional service probes and credential-provider behavior. |
 | Selected task behavior | Its direct `python -m src.validate` command or `make validate` | Live assertions for that task, with the service calls and writes recorded in the manifest. |
 | Target-domain acceptance | Tests and observed evidence chosen for the new corpus | Whether the adapted project satisfies the requirements it actually claims. |
@@ -341,9 +338,8 @@ Current primary references for the agent layer:
 - [OpenAI: build Skills and local discovery](https://learn.chatgpt.com/docs/build-skills).
 - [JSON Schema: Draft 2020-12](https://json-schema.org/draft/2020-12).
 
-The Go `insta` project-management implementation discovers the labs from
-[instaclustr/labs](https://github.com/instaclustr/labs). This package includes its
-lab definitions; it does not contain the CLI binary or alter the CLI's pinned
-catalog. Read [INSTA.md](INSTA.md) before replacing a generated project or
-releasing this lab through a new CLI catalog revision. The Python interfaces,
-source maps and teaching sequence remain usable without the CLI.
+The managed `insta` CLI bootstraps these labs from the pinned
+[instaclustr/labs](https://github.com/instaclustr/labs) revision. Its lifecycle
+commands are documented in [INSTA.md](INSTA.md); [insta.yaml](insta.yaml) contains
+the executable integration. The descriptive manifest in `references/lab.json`
+continues to document the original workshop rather than replacing that contract.
