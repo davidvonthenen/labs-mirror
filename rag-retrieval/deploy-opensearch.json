@@ -36,7 +36,7 @@
       "nodeSize": "SRH-DEV-t4g.small-30"
     }
   ],
-  "opensearchVersion": "3.6.0",
+  "opensearchVersion": "3.9.0",
   "pciComplianceMode": false,
   "privateNetworkCluster": false,
   "reportingPlugin": false,
