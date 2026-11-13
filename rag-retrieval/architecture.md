@@ -61,14 +61,14 @@ Inside each `src/` are `ingest.py`, `query.py` (plus `ner_service.py` for Baseli
 | Concern | Architectural rule |
 |---|---|
 | Shared plumbing | Every task imports connection, configuration, model, and logging code from `support/common/` through its `src/common` link. Tasks define retrieval logic only. |
-| Configuration | Shell values take precedence; an optional `.env`, created from `support/.env.example`, is loaded by `load_settings()`. `require_configured()` stops a task before it connects if required values are missing. Details and precedence: [section 6](#6-configuration-and-deployment-boundaries). |
+| Configuration | One `.env`, created from `support/.env.example`, is loaded by `load_settings()`. `require_configured()` stops a task before it connects if required values are missing. Details and precedence: [section 6](#6-configuration-and-deployment-boundaries). |
 | Isolation between tasks | Tasks share one OpenSearch cluster but write to separate indexes (see [Index naming](#7-index-naming-one-cluster-many-indexes)). Hybrid RAG (NER + Rerank) and Governance Tiering deliberately share `recipes-bm25` / `recipes-vector`. |
 | LLM access | Tasks call only `generate()`. The provider (`bedrock` or `openai`) is selected by `LLM_PROVIDER`; no task depends on either provider's wire format. |
 | NER | Baseline BM25 RAG, Hybrid RAG (NER + Rerank) and Governance Tiering call the local `ner_service.py` through `NERClient`. |
 | Hard constraints | From Hybrid RAG (NER + Rerank), `--exclude` / `--require` become OpenSearch `must_not` / `filter` clauses, which are boolean and not scored. |
 | Governance record | From Governance Tiering, every query writes one document to `recipes-audit-log` through `log_audit_event()`. |
 | Operations | Operationalize Production adds no retrieval mechanism. It reads the audit trail, checks tiering thresholds against `policy_history.json`, and supplies illustrative hardening policies. |
-| Failure | See the table below. Configuration, search, NER, LLM and audit failures stop the operation; the monitor reports audit-query errors. |
+| Failure | See the table below. Most failures degrade quietly instead of stopping the task; the LLM call is the exception. |
 | Bounded execution | One LLM call per question in every task, with no retry loop and no agentic step. Governance Tiering runs at most one escalation: hot-tier BM25, then (if needed) one full-corpus BM25, then one vector refine. |
 | Authority | Application code, not the model, owns filters, tiers, escalation and the audit record. The model only writes the answer; in Governance Tiering its `[R#]` citation tags are checked against the retrieved evidence afterwards. |
 | Scope | The lab teaches retrieval and governance architecture. It is not dietary-safety advice; see [Safety & Scope](references/SAFETY_AND_SCOPE.md). |
@@ -77,9 +77,9 @@ Inside each `src/` are `ingest.py`, `query.py` (plus `ner_service.py` for Baseli
 
 | Failing component | What happens | Where |
 |---|---|---|
-| NER service (ingest or query) | `extract_entities()` raises on a failed request or malformed response. A valid empty entity list is accepted. | `ner_client.py` |
-| OpenSearch search (BM25, kNN) | The exception propagates and generation is skipped; a successful zero-hit search is a separate case. | `bm25_search()`, `recipe_knn_search()`; Task 4's `hybrid_search()` does not catch the error, so a failed hybrid search raises |
-| Audit write | `log_audit_event()` propagates failures and returns the saved record ID on success. Governance validation reads the record back. | `opensearch_client.py` |
+| NER service (ingest or query) | `extract_entities()` logs a warning and returns `[]`. Ingest still succeeds but stores `entities` without NER tags; query loses only the entity score boost, and filters still apply. | `ner_client.py` |
+| OpenSearch search (BM25, kNN) | `TransportError` is logged and an empty hit list is returned, so the model is asked with no context and (per its prompt) should say it doesn't know. | `bm25_search()`, `recipe_knn_search()`; Task 4's `hybrid_search()` does not catch the error, so a failed hybrid search raises |
+| Audit write | `log_audit_event()` logs the failure and returns; the user still gets the answer (fail-open). | `opensearch_client.py` |
 | LLM call | The exception propagates and the task stops. In Governance Tiering the audit record is written after generation, so a failed LLM call leaves no audit record. | `llm_client.py`, `governance-tiering/src/query.py` |
 | Missing configuration | `require_configured()` raises one `RuntimeError` listing every missing value. | `config.py` |
 
@@ -110,7 +110,7 @@ Open the listed files before changing the corresponding task. Each task's full f
 | Prepare the workspace ([Task 1](tasks/setup-environment.md)) | [`.env.example`](support/.env.example), [`requirements.txt`](support/requirements.txt), [`config.py`](support/common/config.py), [`validate_setup.py`](support/validate_setup.py) | `Settings`, `load_settings`, `require_configured`; the setup check |
 | Baseline Vector RAG ([Task 2](tasks/baseline-vector-rag.md)) | [`ingest.py`](scripts/baseline-vector-rag/src/ingest.py), [`query.py`](scripts/baseline-vector-rag/src/query.py) | `build_text`, `ask`, `ensure_recipe_vector_index`, `recipe_knn_search`, `EmbeddingModel` |
 | Baseline BM25 RAG ([Task 3](tasks/baseline-bm25-rag.md)) | [`ner_service.py`](scripts/baseline-bm25-rag/src/ner_service.py), [`ingest.py`](scripts/baseline-bm25-rag/src/ingest.py), [`query.py`](scripts/baseline-bm25-rag/src/query.py) | `ner`, `load_spacy`, `NERClient`, `ensure_recipe_bm25_index`, `bm25_search` |
-| Hybrid RAG (Native) ([Task 4](tasks/hybrid-rag-native.md)) | [`ingest.py`](scripts/hybrid-rag-native/src/ingest.py), [`query.py`](scripts/hybrid-rag-native/src/query.py) | `ensure_hybrid_index`, `ensure_hybrid_pipeline`, `hybrid_search`, `hybrid_pipeline_name()` |
+| Hybrid RAG (Native) ([Task 4](tasks/hybrid-rag-native.md)) | [`ingest.py`](scripts/hybrid-rag-native/src/ingest.py), [`query.py`](scripts/hybrid-rag-native/src/query.py) | `ensure_hybrid_index`, `ensure_hybrid_pipeline`, `hybrid_search`, `HYBRID_PIPELINE_NAME` |
 | Hybrid RAG (NER + Rerank) ([Task 5](tasks/hybrid-rag-ner-rerank.md)) | [`ingest.py`](scripts/hybrid-rag-ner-rerank/src/ingest.py), [`query.py`](scripts/hybrid-rag-ner-rerank/src/query.py) | `DEFAULT_TIER`, `ask`, `parse_field_value_pairs`, `FILTERABLE_FIELDS`, `bm25_search`, `recipe_knn_search` |
 | Governance Tiering ([Task 6](tasks/governance-tiering.md)) | [`ingest.py`](scripts/governance-tiering/src/ingest.py), [`query.py`](scripts/governance-tiering/src/query.py) | `assign_tier`, `ask`, `REFINE_ANN_POOL`, `_extract_domain_tokens`, `_build_system_prompt`, `_extract_cited_handles`, `log_audit_event` |
 | Operationalize Production ([Task 7](tasks/operationalize-production.md)) | [`monitor.py`](scripts/operationalize-production/src/monitor.py), [`policy_registry.py`](scripts/operationalize-production/src/policy_registry.py), [`validate.py`](scripts/operationalize-production/src/validate.py) | `evaluate_alerts`, `check_ner_service_health`, `check_drift`, `HISTORY_PATH`, `audit_log_governance_stats`, `ensure_audit_retention_policy` |
@@ -149,7 +149,7 @@ Every task's `src.validate` takes no arguments and exits non-zero if a check fai
 
 **Task to LLM.** `generate(prompt, system=..., max_tokens=..., temperature=...)` returns one string. Bedrock sends an Anthropic Messages body, so the Bedrock path works for Anthropic Claude model IDs; the OpenAI path posts to `{OPENAI_BASE_URL}/chat/completions` with a 60-second timeout. Defaults are `BEDROCK_MAX_TOKENS=1024` and `BEDROCK_TEMPERATURE=0.2`. No explicit timeout is set for the Bedrock call. Tasks 2, 4, 5 and 6 send a `Question:` block followed by a `Context:` block built from the retrieved hits, with at most 900 characters of each hit's `text`; Task 3 sends `Context:` first, then the question, caps each hit at 1,200 characters, and uses its own shorter system prompt ("Answer using ONLY the provided context…"). Only Task 6 wraps each hit in an `[R#]` handle.
 
-**Task to NER service.** `POST http://127.0.0.1:8000/ner` with `{"text": "...", "labels": [...]}` (labels optional). The reply is `{"entities": [...], "entity_pairs": [...]}`; a malformed request gets HTTP 400. The service keeps entities of type PERSON, ORG, PRODUCT, GPE, EVENT, WORK_OF_ART, NORP, LOC and FAC of at least three characters, lowercased and de-duplicated. `NERClient` has a 5-second timeout (`NER_TIMEOUT_SECS`). `extract_entities()` raises on request or schema failures; `is_available()` is a separate availability probe used by smoke tests and setup. What the entities do to ranking, and where a valid extraction finds no relevant names, is on [Named-entity recognition in retrieval](concepts/NER_IN_RETRIEVAL.md).
+**Task to NER service.** `POST http://127.0.0.1:8000/ner` with `{"text": "...", "labels": [...]}` (labels optional). The reply is `{"entities": [...], "entity_pairs": [...]}`; a malformed request gets HTTP 400. The service keeps entities of type PERSON, ORG, PRODUCT, GPE, EVENT, WORK_OF_ART, NORP, LOC and FAC of at least three characters, lowercased and de-duplicated. `NERClient` has a 5-second timeout (`NER_TIMEOUT_SECS`). `extract_entities()` hides failures by returning `[]`; `is_available()` is the check that does not, and is what the smoke tests and setup check use. What the entities do to ranking, and where they silently do nothing, is on [Named-entity recognition in retrieval](concepts/NER_IN_RETRIEVAL.md).
 
 ## 5. The shared `support/common/` package
 
@@ -168,7 +168,7 @@ query, not the underlying plumbing. That is intentional: the point of this lab i
 | `support/common/opensearch_client.py` | `create_client()` (the one OpenSearch client factory every task uses) + every index-mapping/query-builder function, organized by task in comment-delimited sections. This is the largest shared module and the one most tasks extend. It still holds four older helpers (`ensure_vector_index`, `knn_search`, `ensure_bm25_index`, `bm25_entity_query`) that no task calls; they are kept as legacy code. |
 | `support/common/llm_client.py` | `generate()` — the one function every task calls to get a completion. Dispatches to Amazon Bedrock or an OpenAI-compatible endpoint based on `LLM_PROVIDER` in `.env`. |
 | `support/common/embeddings.py` | `EmbeddingModel` — wraps `sentence-transformers`, cached per process. `encode()` returns L2-normalized vectors; `dimension` is read from the loaded model. See [Embedding models](concepts/EMBEDDING_MODELS.md). |
-| `support/common/ner_client.py` | `NERClient` — calls the local `ner_service.py` Flask service and normalizes results; network/service failures raise, so ingestion cannot silently store incomplete NER metadata. See [Named-entity recognition in retrieval](concepts/NER_IN_RETRIEVAL.md#failure-and-monitoring). |
+| `support/common/ner_client.py` | `NERClient` — calls the local `ner_service.py` Flask service and normalizes results; network/service failures degrade to an empty entity list rather than raising, so a flaky NER call never takes down ingest or query. See [Named-entity recognition in retrieval](concepts/NER_IN_RETRIEVAL.md#failure-and-monitoring). |
 | `support/common/labels.py` | `normalize_values()` — lowercases, collapses whitespace and de-duplicates, so `"Sulfites"`, `"sulfites"`, `" Sulfites "` all resolve to the same filter term. |
 | `support/common/logging.py` | One `get_logger()` used everywhere, with third-party HTTP libraries quieted below `DEBUG`. |
 | `support/common/__init__.py` | Runs on import, before anything else: on macOS only, merges the System keychain's trusted roots into a local CA bundle. This exists because Python installed via the official python.org `.pkg` and corporate TLS-inspecting proxies (Zscaler, Netskope, ...) both cause `CERTIFICATE_VERIFY_FAILED` even on an unrestricted network — see [setup troubleshooting](troubleshooting/setup-environment.md). On other platforms it adds nothing, and that case was not tested. |
@@ -177,7 +177,7 @@ query, not the underlying plumbing. That is intentional: the point of this lab i
 
 ## 6. Configuration and deployment boundaries
 
-The optional lab-root `.env` (copied from `support/.env.example`) is loaded once per process by `support/common/config.py`'s `load_settings()`. Every task reads
+There is exactly one `.env` (copied from `support/.env.example`), loaded once per process by `support/common/config.py`'s `load_settings()`. Every task reads
 from the same `Settings` dataclass; what differs per task is *which*
 fields it actually uses (e.g. only Governance Tiering and Operationalize Production read
 `TIER_MIN_HOT_SCORE`/`TIER_MIN_HOT_CANDIDATES`). This is why adding a new
@@ -202,7 +202,7 @@ system.
 | `NER_SERVICE_URL`, `NER_TIMEOUT_SECS` | `http://127.0.0.1:8000/ner`, `5` | The NER service is local only. |
 | `LLM_PROVIDER` | `bedrock` | `openai` selects an OpenAI-compatible endpoint. Only the Bedrock path was exercised in the live runs; the OpenAI path is untested. |
 
-**Deployment boundaries.** OpenSearch and the LLM are remote and need credentials; embeddings and NER run locally. Manual users start NER with `make ner` or `python -m src.ner_service`; `insta` supervises the declared service. The service listens on `127.0.0.1`. Configure disposable index names through the existing `OPENSEARCH_*_INDEX` variables. Hybrid pipeline and optional retention-policy names are derived from those index names. Keep secrets in the shell or an optional private `.env`.
+**Deployment boundaries.** The OpenSearch cluster and the LLM are remote and need credentials; embeddings and the NER service run on the local machine. The NER service is a development server started by hand (`make ner`, or `python -m src.ner_service`) and listens on `127.0.0.1` only; nothing in the lab starts or supervises it. The cluster is typically shared, so a task that writes indexes can be pointed at disposable names by setting the `OPENSEARCH_*_INDEX` variables in the shell. Tasks 4 and 7 also create cluster-wide objects with fixed names: the search pipeline `hybrid-search-pipeline` and the ISM policy `recipes-audit-log-retention`. Running the lab on a shared cluster therefore changes those objects for everyone using it. Credentials belong in `.env`, which must not be committed or shared.
 
 ## 7. Index naming: one cluster, many indexes
 
@@ -233,14 +233,14 @@ Each task is one architectural change, isolated so its effect is independently v
 - **Baseline Vector RAG** — one mechanism: the question is embedded and `recipe_knn_search()` returns the nearest recipes by cosine similarity. The embedded text is `build_text()`: name and source, ingredients, allergen cautions and health labels; instructions and nutrient values are not embedded.
   - *Limit:* similarity does not weigh a source domain heavily. The question naming `thegratefulgirlcooks.com` retrieves the `womensweeklyfood.com.au` Fish and Chips recipe and not its own (cosine 0.519 against 0.653). `validate.py` asserts this. [BM25 versus kNN](concepts/BM25_VS_KNN.md) and [Embedding models](concepts/EMBEDDING_MODELS.md) probe why on live data.
 - **Baseline BM25 RAG** — keyword search run *instead of* vector search. `multi_match` (`best_fields`, operator `or`) over `recipe_name^4`, `entities^3`, `text^2` and `source`, plus a constant `+6.0` boost for a recipe whose `entities` match an entity found in the question.
-  - *Limit:* BM25 does not "pick" the right same-name recipe. Both Fish and Chips recipes are retrieved for both questions (`validate.py` checks this), and the model tells them apart from the `source:` label in each snippet. NER adds only a small boost to the ranking. If the NER service is down, the task fails and asks for service recovery. See [Named-entity recognition in retrieval](concepts/NER_IN_RETRIEVAL.md) for what NER extracts and the alternatives.
+  - *Limit:* BM25 does not "pick" the right same-name recipe. Both Fish and Chips recipes are retrieved for both questions (`validate.py` checks this), and the model tells them apart from the `source:` label in each snippet. NER adds only a small boost to the ranking. If the NER service is down, the boost silently disappears. See [Named-entity recognition in retrieval](concepts/NER_IN_RETRIEVAL.md) for what NER extracts and the alternatives.
 
 ### Hybrid pair: Native and NER + Rerank
 
 - **Hybrid RAG (Native)** — both mechanisms fused **server-side** in one `hybrid` query: a `match` on `text` plus a kNN clause, combined by a search pipeline (`min_max` normalization, `arithmetic_mean`, weights 0.3 BM25 / 0.7 vector). The source domain is part of `text`, so that term counts toward the BM25 half.
-  - *Limits:* the fused score is relative to the result set (min-max), not an absolute relevance, and `hybrid_search()` accepts no filters, so it cannot express "never sulfites". The pipeline is named `<hybrid-index>-search-pipeline`; ingestion sets its weights and queries leave them unchanged. [BM25 versus kNN](concepts/BM25_VS_KNN.md#hybrid-fusion-and-the-weights-03-and-07) sweeps the weights on live data.
+  - *Limits:* the fused score is relative to the result set (min-max), not an absolute relevance, and `hybrid_search()` accepts no filters, so it cannot express "never sulfites". The pipeline name is fixed and cluster-wide, and `query.py` re-applies the default 0.3 / 0.7 weights on every run, so weights passed to `ingest` do not persist past the next query (read from the code, not run). [BM25 versus kNN](concepts/BM25_VS_KNN.md#hybrid-fusion-and-the-weights-03-and-07) sweeps the weights on live data.
 - **Hybrid RAG (NER + Rerank)** — two **separate phases**. `bm25_search()` grounds up to `--candidate-k` (25) recipes under hard filters: `--exclude` becomes `must_not`, `--require` becomes `filter`. `recipe_knn_search()` then reorders only those IDs by similarity and returns `--top-k` (5). A filter is boolean; a score is not.
-  - *Retrieval scope:* candidate IDs and metadata filters are inside the Lucene kNN clause. This avoids the old whole-index post-filter starvation; approximate scores/order still depend on the model and corpus.
+  - *Limit, verified:* the vector filter on candidate IDs is a **post-filter** over the nearest `candidate_k` neighbors of the whole index (the `knn` clause sits in `bool.must`). With `candidate_k=25`, a Fish and Chips question with `--exclude allergen=Sulfites` kept 25 grounding candidates but returned only 4 refined hits; with `candidate_k=300` it returned all 25. The exclusion is never violated (the filter still applies), but refine can silently drop good candidates. Governance Tiering fixes this with `REFINE_ANN_POOL`. See [BM25 versus kNN, Probe 3](concepts/BM25_VS_KNN.md#probe-3-a-post-filter-over-a-small-pool).
   - *Limit, from the code:* filters match normalized keyword values exactly, so `allergen=Sulfite` would not match `sulfites`. They are only as complete as the stored `cautions` metadata.
 
 ### Governance Tiering
@@ -249,7 +249,7 @@ The same two-phase pipeline, but which data is searched first is decided by a **
 
 1. `assign_tier()` at ingest: any allergen caution makes a recipe `hot`; none makes it `lt`. On the sample that is 209 hot and 51 lt (201 recipes carry Sulfites).
 2. At query time BM25 grounds in `tier=hot` first. It escalates to the whole corpus if the hot tier has no candidates (`no_hot_candidates`), the question names a source that is absent from the hot hits (`named_source_not_in_hot_tier`), or the hot results are weak (`low_confidence_hot_score`: fewer than `TIER_MIN_HOT_CANDIDATES` hits or a top score below `TIER_MIN_HOT_SCORE`). The reasons are checked in that order.
-3. Vector refine restricts retrieval to the resulting IDs and metadata inside the Lucene kNN clause. The existing `REFINE_ANN_POOL = 300` is retained.
+3. Vector refine runs over the resulting IDs with `REFINE_ANN_POOL = 300`, larger than the whole corpus, so the post-filter limit above does not drop candidates.
 4. Each retrieved recipe gets a handle `[R1]`, `[R2]`, …; the prompt requires the model to cite them; the answer's tags are compared with the handles that were provided.
 5. One audit record is written. See [section 10](#10-evidence-governance-and-audit).
 
@@ -281,7 +281,7 @@ Ingest never deletes: if the data file shrinks, documents from an earlier run st
 |---|---|---|---|
 | Baseline Vector RAG | kNN on `embedding`, `k=5`, `candidate_k=25` | up to 5 hits | none |
 | Baseline BM25 RAG | `multi_match` + entity boost, `k=10` | up to 10 hits | none |
-| Hybrid RAG (Native) | `hybrid` (`match` + kNN) through `<hybrid-index>-search-pipeline`, `k=5` | up to 5 hits | none |
+| Hybrid RAG (Native) | `hybrid` (`match` + kNN) through `hybrid-search-pipeline`, `k=5` | up to 5 hits | none |
 | Hybrid RAG (NER + Rerank) | BM25 `k=candidate_k` (25), then kNN on those IDs, `k=5` | grounding list and refined list | `must_not` / `filter` on both phases |
 | Governance Tiering | BM25 over `tier=hot` (and, if escalated, all tiers), then kNN with `candidate_k=300`, `k=5` | grounding list, refined list, governance metadata | as above, plus `tier` |
 
@@ -291,11 +291,11 @@ In Tasks 2, 3, 5 and 6 a hit carries `recipe_id`, `recipe_name`, `source`, `text
 
 **Evidence.** In Governance Tiering the model sees each hit wrapped as `[R#] … [/R#]` with its name, source, tier and cautions. Its system prompt lists the allowed tags and requires one after every factual sentence. `_extract_cited_handles()` finds the `[R#]` tags in the answer; any tag not in the provided list is a *hallucinated citation*.
 
-**What this does and does not establish.** The check is pattern-based. It can show that a cited tag was not provided and that an answer omitted all citations despite receiving evidence. It cannot show that the cited recipe supports the sentence, that an uncited sentence is true, or that the answer is correct. A hallucinated citation is recorded (`hallucinated_citations`, `citations_valid=False`) and surfaced by the monitor; the answer is still returned. These controls detect and record; they do not enforce.
+**What this does and does not establish.** The check is pattern-based. It can show that a cited tag was not provided. It cannot show that the cited recipe supports the sentence, that an uncited sentence is true, or that the answer is correct. A hallucinated citation is recorded (`hallucinated_citations`, `citations_valid=False`) and surfaced by the monitor; the answer is still returned. These controls detect and record; they do not enforce.
 
-**Audit record.** One document per query in `recipes-audit-log`: `timestamp`, `question`, `entities`, `exclude_filters`, `require_filters`, `tiers_searched`, `escalated`, `escalation_reason`, `grounding_candidate_count`, `refined_hit_count`, `refined_recipe_ids`, `refined_sources`, `refined_cautions`, `evidence_handles`, `cited_handles`, `hallucinated_citations`, `citations_present`, `citations_valid`, `answer` and `latency_ms`. Handle order matches `refined_recipe_ids`, so a handle can be mapped back to a recipe from the log alone. The record holds the full question and answer text, so apply the same care to the audit index as to the data it describes.
+**Audit record.** One document per query in `recipes-audit-log`: `timestamp`, `question`, `entities`, `exclude_filters`, `require_filters`, `tiers_searched`, `escalated`, `escalation_reason`, `grounding_candidate_count`, `refined_hit_count`, `refined_recipe_ids`, `refined_sources`, `refined_cautions`, `evidence_handles`, `cited_handles`, `hallucinated_citations`, `citations_valid`, `answer` and `latency_ms`. Handle order matches `refined_recipe_ids`, so a handle can be mapped back to a recipe from the log alone. The record holds the full question and answer text, so apply the same care to the audit index as to the data it describes.
 
-**Lifecycle.** The write must succeed (see the failure table in [section 2](#2-system-contract)). Retention is an explicit administration step; ordinary validation only reads its status. `recipes-audit-log-retention` deletes the whole `recipes-audit-log` index when the index is `AUDIT_RETENTION_DAYS` old (180 by default), counted from when the index was created. It is an index-level deletion, not a per-record one: every record is removed together, including ones written the day before, and a fresh index starts a new window. A rolling per-record window would need rollover or time-based indexes, which the lab does not use. `monitor.py` summarizes the window and exits non-zero on an alert, so it can be scheduled by whatever runs your jobs; the lab does not schedule it.
+**Lifecycle.** The write is best-effort (see the failure table in [section 2](#2-system-contract)). `recipes-audit-log-retention` deletes the whole `recipes-audit-log` index when the index is `AUDIT_RETENTION_DAYS` old (180 by default), counted from when the index was created. It is an index-level deletion, not a per-record one: every record is removed together, including ones written the day before, and a fresh index starts a new window. A rolling per-record window would need rollover or time-based indexes, which the lab does not use. `monitor.py` summarizes the window and exits non-zero on an alert, so it can be scheduled by whatever runs your jobs; the lab does not schedule it.
 
 ## 11. Building similar components
 
@@ -320,14 +320,14 @@ Add a new task, or a variation of one, by keeping to the same shape:
 | Baseline BM25 RAG | The NER service is running; both same-name recipes are retrieved for both questions. |
 | Hybrid RAG (Native) | An answer comes back and the question's own recipe is among the top two hits. |
 | Hybrid RAG (NER + Rerank) | Both recipes are grounded without a filter, and with `--exclude allergen=Sulfites` the sulfite recipe is absent and the sulfite-free one remains. |
-| Governance Tiering | Citation presence/membership and source checks (offline); hot/LT behavior; newly written audit records read back by ID. |
-| Operationalize Production | Alert logic, current thresholds match the checked-in history, existing retention is inspected, and real audit records plus NER health are verified. |
+| Governance Tiering | Citation extraction and hallucination detection (offline); a hot-tier question resolves without escalation; a long-term-tier question escalates. |
+| Operationalize Production | Alert and drift logic (offline); the retention policy can be ensured; live governance stats are well formed. |
 
-**Recorded source baseline.** The supplied source package reports an earlier test on Python 3.10 on macOS; Instaclustr OpenSearch 3.6.0 (with the neural-search and index-management plugins); Amazon Bedrock with Claude Haiku 4.5; `all-MiniLM-L6-v2`; spaCy `en_core_web_sm` via the local service. Every task's setup, ingest, query and validate steps were run against these.
+**Recorded end-to-end baseline.** Before this dependency update, the lab was tested on Python 3.10 on macOS; Instaclustr OpenSearch 3.6.0 (with the neural-search and index-management plugins); Amazon Bedrock with Claude Haiku 4.5; `all-MiniLM-L6-v2`; spaCy `en_core_web_sm` via the local service. Every task's setup, ingest, query and validate steps were run against these.
 
-**Probes.** Original numerical outputs are retained as illustrative source-baseline observations, not a new live run of this repaired release. Where behavior changed, Expected blocks state the current invariants to check. Retrieval probes read indexes/NER and call no LLM. The explicitly labeled retention administration example changes cluster state; it is separate from normal read-only production validation.
+**Probes.** The `python - <<'PY'` probes on the task and concept pages were run against the same live services, and each page's **Expected** block is its real output. They read the indexes or the NER service and call no LLM; none writes to the cluster. They are teaching aids and are not part of any `validate.py`. Probes that print scores reproduce the ranking and counts, and the scores themselves drift with the index.
 
-**Default compatibility target.** Python 3.12 is the default recommended interpreter. The setup check accepts Python 3.10–3.14; the current pinned spaCy package excludes Python 3.15+.
+**Default compatibility target.** Python 3.12 is the default recommended interpreter. The setup check accepts Python 3.10 and newer without an upper-version gate; package metadata determines which newer interpreters can install the full dependency set.
 
 **Verification boundaries.** The recorded end-to-end baseline above is not evidence of a new end-to-end run on Python 3.12 or spaCy 3.8.16. Live OpenAI calls, the updated dependency stack against Instaclustr/Bedrock, non-macOS systems (the CA-bundle self-heal does nothing there), other OpenSearch versions, larger data than the 260-recipe sample, and concurrent users still require integration verification.
 
@@ -336,7 +336,9 @@ in the selected Python environment, then run `python scripts/validate_lab.py`
 and `python -m unittest discover -s tests -v` from the lab root. These checks
 need no retrieval dependencies or credentials: the validator checks the task
 manifest/schema, declared paths and command entry points, local Markdown links,
-task structure, Skill metadata, and Python syntax. The test suite covers that validator, deliberately broken fixtures, packaging paths, and repaired helper behavior with controlled dependencies. It does not establish live model loading, SDK/service compatibility or retrieval quality. No CI workflow is included.
+task structure, Skill metadata, and Python syntax. The test suite covers that
+validator and deliberately broken fixtures. It does not cover SDK request
+construction, model loading, or retrieval behavior. No CI workflow is included.
 The task `validate.py` scripts remain live-service smoke tests, and several
 require NER or modify remote resources; their effects are recorded in
 [the manifest](references/lab.json). Treat a green task run as "the demonstrated
