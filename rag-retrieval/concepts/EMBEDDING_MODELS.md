@@ -97,7 +97,7 @@ raw float32 size: 1536 bytes per vector; 1.54 GB per million vectors
 cosine=0.7157  dot=0.7157  squared L2=0.5686  (2 - 2*cosine = 0.5686)
 ```
 
-The 1.54 GB is the raw vectors only. The HNSW graph, the document text and replicas add to it, and a 1,024-dimension model needs about 2.7 times as much (1,024 / 384). Dimension is therefore a cost decision as well as a quality one. The sample here has 260 recipes (about 0.4 MB of vectors), so cost does not matter in this lab, and it would at a million documents.
+The 1.54 GB is the raw vectors only. The HNSW graph, the document text and replicas add to it, and a 1,024-dimension model needs about 2.7 times as much (1,024 / 384). Dimension is therefore a cost decision as well as a quality one. The sample here has 1,823 chunks (about 2.8 MB of vectors), so cost does not matter in this lab, and it would at a million documents.
 
 ### Distance: cosine, dot product and L2
 
@@ -105,7 +105,7 @@ Because `EmbeddingModel.encode()` normalises every vector to length 1, three mea
 
 ### Input limit
 
-Each model reads a fixed number of *tokens* (word pieces), and silently ignores the rest. MiniLM's limit is 256 tokens, a figure its model card states: "input text longer than 256 word pieces is truncated". The lab embeds a rendered recipe (name, source, ingredients, cautions, health labels). Most recipes are far below the limit, but five of the 260 are not, and the longest is 307 tokens. [Task 2's length check](../tasks/baseline-vector-rag.md#check-the-recipe-lengths) prints these numbers from your own copy. Words past the limit add nothing to the vector, but the full text is still stored in OpenSearch, so BM25 and filters can use it. The lab does not change the layout; [Chunking](CHUNKING.md#document-design-what-goes-into-the-embedded-text) covers what to put in the embedded text and when to split a document.
+Each model reads a fixed number of *tokens* (word pieces), and silently ignores the rest. MiniLM's limit is 256 tokens, a figure its model card states: "input text longer than 256 word pieces is truncated". The lab embeds recipe *chunks*, because a whole recipe does not fit: with its page text, every one of the 260 recipes is over the limit (median 482 tokens, longest 758), while the longest chunk is 233 tokens. [Task 2's chunk probe](../tasks/baseline-vector-rag.md#see-the-chunks) prints these numbers from your own copy. Words past the limit add nothing to the vector, but the full text is still stored in OpenSearch, so BM25 and filters can use it; that is why truncation hides the problem instead of raising an error. [Chunking](CHUNKING.md) explains how the lab splits recipes and what to put in the embedded text.
 
 ### Prefixes
 
@@ -114,7 +114,7 @@ Some models are trained to see a marker in front of the text, and perform worse 
 | Model | What its card says |
 | --- | --- |
 | `intfloat/e5-base-v2`, `intfloat/multilingual-e5-base` | Each text should start with `query: ` or `passage: `. |
-| `BAAI/bge-base-en-v1.5` (and the small and large v1.5 variants) | For retrieval, add `Represent this sentence for searching relevant passages: ` to the question only, never to passages. |
+| `BAAI/bge-base-en-v1.5` (and the small and large v1.5 variants) | For retrieval, the model card recommends adding `Represent this sentence for searching relevant passages: ` to the question only, never to passages. For the v1.5 models it is optional, and leaving it out costs a little accuracy. |
 | `nomic-ai/nomic-embed-text-v1.5` | Embed documents as `search_document: <text>` and questions as `search_query: <text>`. |
 
 `EmbeddingModel.encode()` in this lab adds no prefix. Switching to one of these models means adding it in your own code, in the right place for questions and for documents. Forgetting is easy and silent: nothing fails, and retrieval is just worse.
@@ -128,14 +128,14 @@ The first model in the table is the one this lab runs. Every other row is **not 
 | `all-MiniLM-L6-v2` (**this lab**) | 384 | 256 | A small, general-purpose model for teaching, prototypes and CPU-only machines. About 91 MB of weights, Apache-2.0 licence. |
 | `all-mpnet-base-v2` | 768 | 384 | The next step up from MiniLM in the same family, for more quality at about twice the vector size, still local. |
 | `BAAI/bge-small-en-v1.5` | 384 | 512 | A small English model with a longer input limit than MiniLM. Same vector size, so the same memory. |
-| `BAAI/bge-base-en-v1.5` / `bge-large-en-v1.5` | 768 / 1024 | 512 | English retrieval where quality matters more than size and latency. Uses the query instruction above. |
+| `BAAI/bge-base-en-v1.5` / `bge-large-en-v1.5` | 768 / 1024 | 512 | English retrieval where quality matters more than size and latency. Can use the query instruction above. |
 | `intfloat/e5-base-v2` | 768 | 512 | English retrieval that uses separate query and passage prefixes. Requires `query: ` and `passage: `. |
 | `intfloat/multilingual-e5-base` | 768 | 512 | Questions and documents in several languages. Same prefixes. |
-| `paraphrase-multilingual-MiniLM-L12-v2` | 384 | 128 | Multilingual sentence similarity on small hardware. Its 128-token limit is half of MiniLM's, so it would truncate far more of this lab's recipes. |
+| `paraphrase-multilingual-MiniLM-L12-v2` | 384 | 128 | Multilingual sentence similarity on small hardware. Its 128-token limit is half of MiniLM's, above the median chunk (92 tokens) but below the longest (233), so it would truncate some of this lab's chunks. |
 | `nomic-ai/nomic-embed-text-v1.5` | 768 | 8,192 | Long documents without chunking, locally hosted. Requires `search_document: ` and `search_query: `. |
 | `BAAI/bge-m3` | 1,024 | 8,192 | Many languages (its card says more than 100) and long inputs, at a large vector size. |
 | Amazon Titan Text Embeddings V2 (`amazon.titan-embed-text-v2:0`, Bedrock) | 1,024 (or 512, 256) | 8,192 | You already use Bedrock for generation and want no model to host. Text leaves your machine for AWS. |
-| OpenAI `text-embedding-3-small` | 1,536 (reducible with the `dimensions` parameter) | 8,192 | A hosted model with a cost per token and no local hardware. Text leaves your machine for the provider. |
+| OpenAI `text-embedding-3-small` | 1,536 (reducible with the `dimensions` parameter) | 8,191 | A hosted model with a cost per token and no local hardware. Text leaves your machine for the provider. |
 
 Two columns decide more than the benchmark scores people quote:
 
@@ -157,10 +157,10 @@ Walk the questions in this order, because the first ones eliminate most candidat
 ## Why this lab uses MiniLM
 
 - **Every task has to run on a laptop.** The model is about 91 MB, runs on CPU, loads in seconds, and needs no key, no account and no per-query cost.
-- **It is enough to show the failures.** The lesson of Task 2 is a retrieval failure, and the failure appears with this model: the question about recipe A scores 0.653 against recipe B and 0.519 against A itself. A reader reproduces it without any setup beyond `pip install`.
+- **It is enough to show the failures.** The lesson of Task 2 is a retrieval failure, and the failure appears with this model: the question about recipe A scores cosine 0.627 against recipe B's best chunk and 0.494 against A's (OpenSearch reports these as 0.813 and 0.747). A reader reproduces it without any setup beyond `pip install`.
 - **384 dimensions keep the indexes small** and the shared cluster light.
 
-What this choice does *not* show: **whether a stronger model would avoid the Fish and Chips failure.** It was not tested. A larger model might separate the two recipes better, or it might not, because the two recipes' texts differ in little more than a domain name, and Probe 1 shows that kind of difference is only partly visible in an embedding. Treat "use a better model" as a hypothesis to measure with the sweep in [BM25 versus kNN](BM25_VS_KNN.md#hybrid-fusion-and-the-weights-03-and-07), not as a fix.
+What this choice does *not* show: **whether a stronger model would avoid the Fish and Chips failure.** It was not tested. A larger model might separate the two recipes better, or it might not, because the two recipes' texts differ in little more than a domain name, and Probe 1 shows that kind of difference is only partly visible in an embedding. Treat "use a better model" as a hypothesis to measure with the sweep in [BM25 versus kNN](BM25_VS_KNN.md#hybrid-fusion-and-the-weights), not as a fix.
 
 ## Switching the embedding model safely
 
@@ -168,7 +168,7 @@ Do this on a copy of your indexes, not in place, especially on a shared cluster.
 
 1. **Pick the model** using the questions above, and read its card for the prefix rules, the input limit and whether its output is normalised.
 2. **Set `EMBEDDING_MODEL`** in `.env`. Leave `EMBEDDING_DIMENSION` equal to the new model's dimension as well, since it is the fallback if the model cannot report one.
-3. **Use new index names.** Each `ingest.py` creates an index with the model's dimension only if the index does not exist. An existing 384-dimension index will reject 768-dimension vectors. Set the `OPENSEARCH_*_INDEX` variables to new names (this lab's `-rrtest` suffix is an example), or delete the old index when it is yours to delete.
+3. **Use new index names.** Each `ingest.py` creates an index with the model's dimension only if the index does not exist. An existing 384-dimension index will reject 768-dimension vectors. Set the `OPENSEARCH_*_INDEX` variables to new names (the `-yourname` suffix in [Task 1](../tasks/setup-environment.md) is an example), or delete the old index when it is yours to delete.
 4. **Re-ingest every document** with the new model, and make sure questions use the same model, which they do, since both read `EMBEDDING_MODEL`. Never mix old and new vectors in one index.
 5. **Add any prefix** the model needs, in the place where documents are embedded and in the place where questions are embedded.
 6. **Re-run the checks that depend on the model.** Task 2's `validate.py` is written to *fail* if the Fish and Chips failure stops reproducing, and with a stronger model it may; that is a result, not a bug. Re-run the weight sweep from [BM25 versus kNN](BM25_VS_KNN.md), because fusion weights depend on the score distributions of both retrievers and these change with the model.
@@ -183,6 +183,6 @@ Do this on a copy of your indexes, not in place, especially on a shared cluster.
 ## Related pages
 
 - [BM25 versus kNN](BM25_VS_KNN.md): how vector search compares with keyword search, and how to fuse them.
-- [Chunking](CHUNKING.md): what to put in the text that gets embedded, and why this lab embeds each recipe whole.
+- [Chunking](CHUNKING.md): what to put in the text that gets embedded, and how this lab splits each recipe into chunks.
 - [Infrastructure choices](INFRASTRUCTURE_CHOICES.md): the other infrastructure decisions behind the lab.
 - [Architecture](../architecture.md): where embeddings sit in each task's pipeline.

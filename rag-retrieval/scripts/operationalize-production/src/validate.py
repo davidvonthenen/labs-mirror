@@ -111,7 +111,7 @@ def test_operationalize_production_audit_retention_policy_can_be_ensured() -> No
     cluster, since that's a real possibility on some managed tiers -- see
     tasks/operationalize-production.md section A."""
     settings = load_settings()
-    require_configured(settings, need_bedrock=False)
+    require_configured(settings)
     client = create_client(settings)
     ensure_audit_index(client, settings.opensearch_audit_index)
 
@@ -138,7 +138,7 @@ def test_operationalize_production_live_governance_stats_are_well_formed() -> No
     """Live-cluster test: whatever real audit data Governance Tiering has already
     written, the aggregation must return well-formed rates."""
     settings = load_settings()
-    require_configured(settings, need_bedrock=False)
+    require_configured(settings)
     client = create_client(settings)
     ensure_audit_index(client, settings.opensearch_audit_index)
 

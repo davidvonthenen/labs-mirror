@@ -5,10 +5,13 @@ PYTHON ?= python
 QUESTION ?= Does the womensweeklyfood.com.au Fish and Chips recipe contain sulfites?
 ARGS ?=
 
-.PHONY: install ingest query validate clean
+.PHONY: install ner ingest query validate clean
 
 install:
 	$(PYTHON) -m pip install -r ../../support/requirements.txt
+
+ner:
+	$(PYTHON) -m src.ner_service
 
 ingest:
 	$(PYTHON) -m src.ingest

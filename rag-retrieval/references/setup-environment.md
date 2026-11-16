@@ -17,8 +17,6 @@
 
 Keep `.env` out of anything you share: it holds your OpenSearch password and LLM credentials.
 
-The setup check's `env-file` probe also recognizes `support/.env` and container runtime configuration, but that does not add another dotenv search path. [`support/docker-compose.yaml`](../support/docker-compose.yaml) injects `support/.env` through `env_file`; native task commands should use the lab-root `.env`. A file at `support/.env` is loaded directly only when `support/` is the current directory.
-
 ## Source map
 
 | Source | Responsibility |

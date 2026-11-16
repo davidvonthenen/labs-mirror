@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # Copyright 2026 NetApp Instaclustr contributors. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Local spaCy NER service used by the ingest/query paths of Baseline BM25 RAG
-and Hybrid RAG (NER + Rerank).
+"""Local spaCy NER service used by the ingest/query paths of Baseline BM25 RAG,
+Hybrid RAG (NER + Rerank) and Governance Tiering.
 
 Deliberately local-only: spaCy's small model is ~13MB and needs no GPU, so
 there's no reason to move it to Instaclustr/Bedrock like the heavier pieces.

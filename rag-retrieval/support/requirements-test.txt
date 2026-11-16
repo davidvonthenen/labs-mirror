@@ -1,4 +1,2 @@
-# Offline metadata checks and regression tests; runtime requirements are not needed.
-# Install with: python -m pip install -r support/requirements-test.txt
+# Install after requirements.txt to run python -m unittest discover -s tests -v.
 PyYAML>=6.0,<7
-jsonschema>=4.18,<5

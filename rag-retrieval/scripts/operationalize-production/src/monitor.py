@@ -99,7 +99,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     settings = load_settings()
-    require_configured(settings, need_bedrock=False)
+    require_configured(settings)
 
     audit_index = args.audit_index_name or settings.opensearch_audit_index
     lookback_hours = args.lookback_hours if args.lookback_hours is not None else settings.governance_alert_lookback_hours

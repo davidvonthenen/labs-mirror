@@ -26,7 +26,7 @@ The lab uses a hosted cluster, not a local container. Every task's `create_clien
 The lab does not use a local model for generation. `generate()` in `support/common/llm_client.py` is the only function every task calls to get a completion. It dispatches to one of two isolated branches based on `LLM_PROVIDER` in `.env`:
 
 - `bedrock` (the default): the Anthropic Messages API request and response shape, via `boto3`.
-- `openai`: a plain `requests.post()` to any OpenAI-compatible `/chat/completions` endpoint, for anyone without Bedrock or AWS access. It adds no SDK dependency and is import-isolated from the Bedrock branch. Only the Bedrock path was exercised in this lab.
+- `openai`: any OpenAI-compatible `/chat/completions` endpoint, called through the official `openai` Python SDK, for anyone without Bedrock or AWS access. The SDK is imported only when this provider is selected, so the Bedrock branch stays import-isolated from it. Only the Bedrock path was exercised in this lab.
 
 No other module depends on either provider's wire format, only on the signature of `generate()`, so no task's `ingest.py` or `query.py` changes with the provider.
 

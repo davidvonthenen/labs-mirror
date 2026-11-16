@@ -56,8 +56,7 @@ as "Access granted" there — not just that your IAM user/role has
 ### `ValidationException: The provided model identifier is invalid`
 
 `BEDROCK_MODEL_ID` must be the exact model ID string from Bedrock's Model
-access page (e.g.
-`anthropic.claude-3-5-sonnet-20241022-v2:0`), and it must be available in
+access page (copy it exactly, including any prefix), and it must be available in
 the region set by `AWS_REGION` — Bedrock model availability varies by
 region.
 
@@ -73,6 +72,10 @@ over time, so treat the console as the source of truth.
 
 ## Runtime
 
+### `OldLayoutIndexError: Index ... has the older one-document-per-recipe layout`
+
+The index named in the message already exists, and its mapping has no `chunk_id` field, so it was built by an earlier version of this lab that stored one document per recipe. A query never deletes an index, so it stops here. Run this task's ingest (`make ingest`, or `python -m src.ingest`), which replaces that index with the chunk layout and logs a `WARNING` when it does. If the index belongs to someone else, do not run ingest: give your own indexes a suffix first (Task 1, Step 3).
+
 ### OpenSearch connection suddenly fails after previously working
 
 If `OPENSEARCH_HOST` hasn't changed but connections still fail, verify the
@@ -80,6 +83,21 @@ value in your *current* `.env` against the Instaclustr console — a
 cluster's load-balancer hostname can change (e.g. after a resize/restore),
 and a stale hostname produces a generic connection-timeout error that
 looks like a network problem, not a config problem.
+
+A second common cause is the cluster's firewall rules (its IP allow-list). If
+your public IP changed (a different network, a VPN, or a corporate proxy that
+rotates its address), the cluster stops answering and connections hang until
+they time out. The OpenSearch client waits up to 60 seconds and retries three
+times, so a command can look frozen for several minutes. To test without
+waiting:
+
+```bash
+curl -s -o /dev/null -m 15 -w "%{http_code}\n" https://<your OPENSEARCH_HOST>:9200/
+```
+
+`401` means the cluster is reachable (it wants a password). `000` after the
+15 seconds means it is not answering from this machine: add your current public
+IP to the cluster's firewall rules in the Instaclustr console.
 
 ### Results differ from a task's documented sample output
 

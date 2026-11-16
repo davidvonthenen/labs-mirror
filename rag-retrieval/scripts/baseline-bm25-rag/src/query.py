@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # Copyright 2026 NetApp Instaclustr contributors. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Baseline BM25 RAG: BM25 + NER-entity retrieval over recipes, generation via Bedrock."""
+"""Baseline BM25 RAG: BM25 + NER-entity retrieval over recipe chunks, generation via Bedrock.
+
+The index holds chunks, so BM25 returns chunks; `group_by_recipe` folds them back into recipes.
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +12,7 @@ import time
 from typing import List, Sequence
 
 from .common import llm_client
+from .common.chunking import chunk_fetch, group_by_recipe
 from .common.config import load_settings, require_configured
 from .common.ner_client import NERClient
 from .common.opensearch_client import bm25_search, create_client, normalize_hits
@@ -16,7 +20,7 @@ from .common.opensearch_client import bm25_search, create_client, normalize_hits
 SYSTEM_PROMPT = "Answer using ONLY the provided context below. If the context lacks the answer, say so plainly."
 
 
-def _build_context(hits: List[dict], max_chars: int = 1200) -> str:
+def _build_context(hits: List[dict], max_chars: int = 1800) -> str:
     parts = []
     for hit in hits:
         parts.append(
@@ -34,8 +38,8 @@ def ask(question: str, *, top_k: int) -> tuple[str, List[dict]]:
     index_name = settings.opensearch_bm25_recipes_baseline_index
 
     entities = ner.extract_entities(question)
-    response = bm25_search(client, index_name, question, k=top_k, entities=entities)
-    hits = normalize_hits(response)
+    response = bm25_search(client, index_name, question, k=chunk_fetch(top_k), entities=entities)
+    hits = group_by_recipe(normalize_hits(response), top_k=top_k)
     context_block = _build_context(hits)
 
     prompt = f"Context:\n{context_block}\n\nQuestion: {question}"
@@ -63,14 +67,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"QUESTION: {q}")
         print("=" * 88)
         print(f"ANSWER: {answer}")
-        print("\nRAG Hits:")
+        print("\nRAG Hits (recipes, best chunk score; matching chunks in brackets):")
         for hit in hits:
+            sections = ", ".join(c.get("section", "?") for c in hit.get("chunks", []))
             print(
                 f"  - {hit.get('recipe_name', 'unknown')} | source={hit.get('source', 'unknown')} "
-                f"| score={hit.get('score', 0.0):.4f}"
+                f"| score={hit.get('score', 0.0):.4f} | [{sections}]"
             )
         print("=" * 88)
-        print(f"Query time: {dt:.2f}s | Docs provided to LLM: {len(hits)}\n")
+        print(f"Query time: {dt:.2f}s | Recipes provided to LLM: {len(hits)}\n")
 
 
 if __name__ == "__main__":

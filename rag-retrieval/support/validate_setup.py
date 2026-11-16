@@ -75,7 +75,7 @@ def check_python() -> Result:
 def check_layout() -> Result:
     missing: List[str] = []
     for rel in ("README.md", "architecture.md", "support/requirements.txt", "support/.env.example",
-                "support/recipes/recipes_sample.json"):
+                "support/recipes/recipes_sample.json", "support/recipes/recipes_synthetic.json"):
         if not (LAB_ROOT / rel).is_file():
             missing.append(rel)
     for task in TASK_DIRS:

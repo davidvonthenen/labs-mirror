@@ -9,6 +9,9 @@ the BM25 `match` and the kNN sub-query in parallel, then the
 distributions (min-max) and combines them (weighted arithmetic mean) before
 results ever leave the cluster -- no client-side re-ranking, no second
 service to run.
+
+The index holds chunks, so the hybrid query returns chunks; `group_by_recipe` folds them back
+into recipes (best chunk score per recipe) before they reach the LLM.
 """
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ import time
 from typing import List, Sequence
 
 from .common import llm_client
+from .common.chunking import chunk_fetch, group_by_recipe
 from .common.config import load_settings, require_configured
 from .common.embeddings import EmbeddingModel, to_list
 from .common.opensearch_client import (
@@ -24,6 +28,7 @@ from .common.opensearch_client import (
     ensure_hybrid_index,
     ensure_hybrid_pipeline,
     hybrid_search,
+    normalize_hits,
 )
 
 SYSTEM_PROMPT = (
@@ -36,10 +41,9 @@ SYSTEM_PROMPT = (
 def _build_context(hits: List[dict]) -> str:
     parts = []
     for idx, hit in enumerate(hits, start=1):
-        src = hit.get("_source", {})
         parts.append(
-            f"[RECIPE {idx} | {src.get('recipe_name', 'unknown')} | source: {src.get('source', 'unknown')}]\n"
-            f"{(src.get('text') or '')[:900]}"
+            f"[RECIPE {idx} | {hit.get('recipe_name', 'unknown')} | source: {hit.get('source', 'unknown')}]\n"
+            f"{(hit.get('text') or '')[:1800]}"
         )
     return "\n\n".join(parts)
 
@@ -54,8 +58,8 @@ def ask(question: str, *, top_k: int) -> tuple[str, List[dict]]:
     ensure_hybrid_pipeline(client)
 
     query_vec = to_list(embedder.encode([question])[0])
-    response = hybrid_search(client, index_name, question, query_vec, k=top_k)
-    hits = response.get("hits", {}).get("hits", [])
+    response = hybrid_search(client, index_name, question, query_vec, k=chunk_fetch(top_k))
+    hits = group_by_recipe(normalize_hits(response), top_k=top_k)
     context_block = _build_context(hits)
 
     prompt = f"Question:\n{question}\n\nContext:\n{context_block if context_block else 'No context available.'}"
@@ -85,15 +89,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"QUESTION: {q}")
         print("=" * 88)
         print(f"ANSWER: {answer}")
-        print("\nRAG Hits:")
+        print("\nRAG Hits (recipes, best chunk score; matching chunks in brackets):")
         for hit in hits:
-            src = hit.get("_source", {})
+            sections = ", ".join(c.get("section", "?") for c in hit.get("chunks", []))
             print(
-                f"  - {src.get('recipe_name', 'unknown')} | source={src.get('source', 'unknown')} "
-                f"| score={hit.get('_score', 0.0):.4f}"
+                f"  - {hit.get('recipe_name', 'unknown')} | source={hit.get('source', 'unknown')} "
+                f"| score={hit.get('score', 0.0):.4f} | [{sections}]"
             )
         print("=" * 88)
-        print(f"Query time: {dt:.2f}s | Docs provided to LLM: {len(hits)}\n")
+        print(f"Query time: {dt:.2f}s | Recipes provided to LLM: {len(hits)}\n")
 
 
 if __name__ == "__main__":

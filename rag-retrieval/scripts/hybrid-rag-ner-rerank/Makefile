@@ -5,10 +5,13 @@ PYTHON ?= python
 QUESTION ?= Suggest a British fish and chips recipe.
 ARGS ?=
 
-.PHONY: install ingest query validate clean
+.PHONY: install ner ingest query validate clean
 
 install:
 	$(PYTHON) -m pip install -r ../../support/requirements.txt
+
+ner:
+	$(PYTHON) -m src.ner_service
 
 ingest:
 	$(PYTHON) -m src.ingest

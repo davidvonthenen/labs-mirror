@@ -12,14 +12,14 @@ In this lab, NER is one function in [`ner_service.py`](../scripts/baseline-bm25-
 
 The entities are used in two places:
 
-1. **At ingest**, each recipe's text is sent to the service. The returned names, plus the recipe's own `source` and `recipe_name`, are stored in the recipe's `entities` field. That field is a `keyword` field, so each stored name is matched as an exact string.
+1. **At ingest**, each recipe's facts text (name, source, ingredients, cautions and labels) is sent to the service once. The returned names, plus the recipe's own `source` and `recipe_name`, are stored in the `entities` field of every chunk of that recipe. That field is a `keyword` field, so each stored name is matched as an exact string.
 2. **At query time**, the question is sent to the service. The names that come back are added to the BM25 query as a `constant_score` clause on the `entities` field with a boost of 6.0. A recipe whose stored `entities` contain one of the question's names gets +6.0 on top of its text score. Nothing else about the ranking changes.
 
 | Task | Calls the NER service | For |
 | --- | --- | --- |
 | 2 Baseline Vector RAG | No | |
 | 3 Baseline BM25 RAG | Yes | Ingest tags and the query-time boost |
-| 4 Hybrid RAG (Native) | No | Nothing: there is no `entities` field, and the source name is already part of the recipe text that BM25 searches |
+| 4 Hybrid RAG (Native) | No | Nothing: there is no `entities` field, and the source name is already part of every chunk's text (its prefix) that BM25 searches |
 | 5 Hybrid RAG (NER + Rerank) | Yes | Ingest tags and the grounding query's boost |
 | 6 Governance Tiering | Yes | Same as Task 5, and the extracted entities are written to the audit record |
 | 7 Operationalize Production | Yes | A health check only |
@@ -56,7 +56,7 @@ PY
 
 ```text
 Which Fish and Chips recipe from womensweeklyfood.com.au is gluten free?
-  -> [('chips', 'ORG'), ('womensweeklyfood.com.au', 'ORG')]
+  -> [('womensweeklyfood.com.au', 'GPE')]
 Does Heinz tomato ketchup contain sulfites?
   -> [('heinz', 'ORG')]
 Which recipes from BBC Good Food are vegan?
@@ -64,18 +64,18 @@ Which recipes from BBC Good Food are vegan?
 Show me recipes from Jamie Oliver
   -> [('jamie oliver', 'PERSON')]
 Is the Chorizo And Shrimp Rice Recipe safe for a shellfish allergy?
-  -> [('chorizo', 'PERSON'), ('shrimp rice recipe', 'PERSON')]
+  -> [('chorizo', 'ORG'), ('shrimp rice recipe', 'PERSON')]
 Which recipes from Food Network are free of sulfites?
   -> [('food network', 'ORG')]
 Which recipes from food network are free of sulfites?
   -> nothing extracted
 Does Food Network's Microwave Potato Chips recipe contain sulfites?
-  -> [("food network's", 'ORG')]
+  -> [("food network's", 'ORG'), ('microwave potato chips', 'ORG')]
 What can I make with chicken and rice?
   -> nothing extracted
 ```
 
-**Interpretation:** the service finds *names*, not food facts. "Shellfish", "sulfites", "vegan" and "gluten free" are never extracted. Allergens and diets are handled by the structured `cautions` and `diet_labels` fields and by the `--exclude` and `--require` filters in Task 5.
+**Interpretation:** the service finds *names*, not food facts. "Shellfish", "sulfites", "vegan" and "gluten free" are not extracted from these questions. The model is also unreliable on recipe text: at ingest it tags ordinary words such as `allergen` and `sulfites` as entities (they are stored on 247 and 182 of the 260 recipes), and which words it tags changes with the spaCy and model version, so treat stored entities as noisy hints. Allergens and diets are handled by the structured `cautions` and `diet_labels` fields and by the `--exclude` and `--require` filters in Task 5.
 
 ## Probe 2: what the boost does, and what it does not do
 
@@ -83,6 +83,7 @@ Run this from `scripts/baseline-bm25-rag/` after the Task 3 ingest. It runs one 
 
 ```bash
 python - <<'PY'
+from src.common.chunking import chunk_fetch, group_by_recipe
 from src.common.config import load_settings
 from src.common.opensearch_client import bm25_search, create_client, normalize_hits
 
@@ -91,7 +92,8 @@ client = create_client(s)
 question = "Which recipes from Food Network are free of sulfites?"
 
 for label, entities in [("BM25 only", []), ("BM25 + entity boost for 'food network'", ["food network"])]:
-    hits = normalize_hits(bm25_search(client, s.opensearch_bm25_recipes_baseline_index, question, k=10, entities=entities))
+    response = bm25_search(client, s.opensearch_bm25_recipes_baseline_index, question, k=chunk_fetch(10), entities=entities)
+    hits = group_by_recipe(normalize_hits(response), top_k=10)  # chunks in, recipes out
     print(label)
     for h in hits[:5]:
         print(f"  {h['score']:7.4f}  {h['recipe_name'][:32]:32s} | {h['source']:18s} | {h['cautions_display']}")
@@ -100,30 +102,30 @@ for label, entities in [("BM25 only", []), ("BM25 + entity boost for 'food netwo
 PY
 ```
 
-**Expected:** two lists, each with the first five hits and two counts.
+**Expected:** two lists of recipes, each with the first five and two counts.
 
 ```text
 BM25 only
-   8.2704  End-of-the-Rainbow Cookies       | Martha Stewart     | ['Soy', 'Sulfites']
-   7.9419  Whole30 Ground Beef Taco Meat (K | tasteslovely.com   | ['Sulfites']
-   7.6270  Saddle of lamb stuffed with rata | BBC Good Food      | []
-   7.1755  Gluten Free Banana Muffins       | Honest Cooking     | ['Sulfites']
-   6.5703  Strawberry-Banana Lactose Free P | Betty Crocker      | ['Sulfites']
-  Food Network recipes in the top 10: 1
-  recipes in the top 10 that carry Sulfites: 7
-BM25 + entity boost for 'food network'
-  11.2916  Microwave Potato Chips           | Food Network       | []
-  11.1133  Castaway Punch                   | Food Network       | ['Sulfites']
-  11.1132  Pink Puffed Rice Cereal Hearts   | Food Network       | ['Gluten', 'Wheat', 'Sulfites']
-  10.8834  Easy White Pizza                 | Food Network       | ['Sulfites']
-  10.8833  Cheesy Baked Pasta with Meatball | Food Network       | ['Sulfites']
+  11.5281  Pistachio Orange Shortbread      | Food Network       | ['Sulfites']
+  11.3665  Turkey Meatballs                 | Food Network       | ['Gluten', 'Wheat', 'Sulfites']
+  11.2991  Trout Amandine, Steamed Asparagu | Food Network       | ['Sulfites']
+  11.2852  Cheesy Baked Pasta with Meatball | Food Network       | ['Sulfites']
+  11.2741  Easy White Pizza                 | Food Network       | ['Sulfites']
   Food Network recipes in the top 10: 10
-  recipes in the top 10 that carry Sulfites: 9
+  recipes in the top 10 that carry Sulfites: 10
+BM25 + entity boost for 'food network'
+  17.5281  Pistachio Orange Shortbread      | Food Network       | ['Sulfites']
+  17.3665  Turkey Meatballs                 | Food Network       | ['Gluten', 'Wheat', 'Sulfites']
+  17.2991  Trout Amandine, Steamed Asparagu | Food Network       | ['Sulfites']
+  17.2852  Cheesy Baked Pasta with Meatball | Food Network       | ['Sulfites']
+  17.2741  Easy White Pizza                 | Food Network       | ['Sulfites']
+  Food Network recipes in the top 10: 10
+  recipes in the top 10 that carry Sulfites: 10
 ```
 
-**Interpretation:** this is the case where the boost earns its place. On words alone, only one Food Network recipe reaches the top 10 (it is not among the first five shown). With the matching entity, all ten are Food Network recipes. The boost works as a *source selector*.
+**Interpretation:** in this lab's chunked indexes the boost does nothing for this question. On words alone, all ten recipes are already from Food Network: every chunk starts with `(source: Food Network)`, so the words "food" and "network" match in each of a recipe's chunks, and those recipes rise to the top. The boost then adds exactly 6.0 to every one of them and the order does not change. When each recipe was a single document, this was the case where the boost earned its place (on words alone, only one Food Network recipe reached the top 10). The chunk prefix now does that job without the service. The boost could still matter where the words do not already select the recipe, but this lab does not show a case: in [Task 3's probe](../tasks/baseline-bm25-rag.md#see-the-ranking-without-the-model) it lifts both Fish and Chips recipes by the same 6.0.
 
-The second count is the limit. The question also says "free of sulfites", and the boosted list holds nine recipes that carry Sulfites, two more than before. NER extracted nothing about sulfites, and a boost is a preference in any case, not a rule. A question that must never return a sulfite recipe needs the hard filter from Task 5, not a bigger boost.
+The second count is the limit, and it is the same in both lists. The question also says "free of sulfites", and all ten recipes carry Sulfites. NER extracted nothing about sulfites, and a boost is a preference in any case, not a rule. A question that must never return a sulfite recipe needs the hard filter from Task 5, not a bigger boost.
 
 ## Alternatives, and when to use each
 
@@ -167,9 +169,9 @@ Beyond the lab, you would also want a restart policy for the service, a real hea
 
 ## Tradeoffs and limits
 
-- NER adds a process to run and, at best, a small ranking nudge for questions that name a source or a recipe. In this lab the nudge is useful in Probe 2. It does not decide whether the Fish and Chips pair is retrieved, which BM25 does from the recipe name alone (see [Task 3](../tasks/baseline-bm25-rag.md)).
+- NER adds a process to run and, at best, a small ranking nudge for questions that name a source or a recipe. In this lab's chunked indexes it does not change Probe 2's ranking, because the source name in every chunk's prefix already selects the recipes, and it only breaks the tie between the two Fish and Chips recipes in Task 3. It does not decide whether the Fish and Chips pair is retrieved, which BM25 does from the recipe name alone (see [Task 3](../tasks/baseline-bm25-rag.md)).
 - A boost expresses preference. A rule needs a filter. Do not rely on entities for anything that must always or never happen.
-- The probes use the small English model and 260 recipes; results with another model, language or corpus will differ.
+- The probes use the small English model and 260 recipes (1,823 chunks); results with another model, language or corpus will differ.
 - Latency and memory of the service were not measured here.
 
 ## Related pages

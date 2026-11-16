@@ -33,7 +33,7 @@ Step 2 starts `ner_service.py` (from `scripts/baseline-bm25-rag/`), which needs 
 python -m spacy download en_core_web_sm
 ```
 
-If the model download or load fails, follow the [setup troubleshooting entry](setup-environment.md#oserror-e050-cant-find-model-en_core_web_sm) to install a model compatible with the current spaCy version and check the environment's dependencies.
+If that command itself fails, or the model is found but is not compatible with your spaCy version, see the [setup troubleshooting entry](setup-environment.md#oserror-e050-cant-find-model-en_core_web_sm), which shows how to reinstall a matching model.
 
 ### `CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`
 
@@ -78,14 +78,30 @@ cluster's load-balancer hostname can change (e.g. after a resize/restore),
 and a stale hostname produces a generic connection-timeout error that
 looks like a network problem, not a config problem.
 
+A second common cause is the cluster's firewall rules (its IP allow-list). If
+your public IP changed (a different network, a VPN, or a corporate proxy that
+rotates its address), the cluster stops answering and connections hang until
+they time out. The OpenSearch client waits up to 60 seconds and retries three
+times, so a command can look frozen for several minutes. To test without
+waiting:
+
+```bash
+curl -s -o /dev/null -m 15 -w "%{http_code}\n" https://<your OPENSEARCH_HOST>:9200/
+```
+
+`401` means the cluster is reachable (it wants a password). `000` after the
+15 seconds means it is not answering from this machine: add your current public
+IP to the cluster's firewall rules in the Instaclustr console.
+
 ### `TransportError` / warnings from Operationalize Production's `validate.py` mentioning `_plugins/_ism`
 
 Some managed OpenSearch tiers restrict or disable the ISM (Index State
 Management) plugin. `ensure_audit_retention_policy()` is written to
 degrade gracefully — it returns `False` and logs a warning rather than
 raising, and Operationalize Production's `validate.py` reports `[SKIP]` rather than failing
-in this case. Treat it as a manual-review item (see
-[`OPERATIONAL_CHECKLIST.md`](../references/OPERATIONAL_CHECKLIST.md) section A), not a bug.
+in this case. Treat it as a manual-review item, not a bug: see section C of
+[`OPERATIONAL_CHECKLIST.md`](../references/OPERATIONAL_CHECKLIST.md#c-audit-log-hardening)
+for what to do instead.
 
 ### Governance Tiering and Operationalize Production's `recipes-audit-log` queries return nothing
 

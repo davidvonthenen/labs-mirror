@@ -68,6 +68,13 @@ check, not a **correctness** check:
 - **Small, curated, static dataset.** 260 recipes, chosen specifically
   *because* they contain a known ambiguous pair — not a representative or
   comprehensive corpus.
+- **Synthetic recipe text.** The introduction, method steps and serving
+  notes are written by an LLM from each recipe's ingredient list
+  (`support/recipes/recipes_synthetic.json`). They are not from the recipes'
+  original websites, they are not tested recipes, and they were scanned (not
+  proven) to add no ingredient or allergen claim. Do not cook from them. The
+  ingredients, allergen cautions and labels come from the original dataset
+  and are the only source of safety facts in the lab.
 - **No claim-level fact-checking.** See above — citations are checked for
   grounding, not factual accuracy of the claim they support.
 - **No response policy is enforced on governance failures.** Operationalize Production's
