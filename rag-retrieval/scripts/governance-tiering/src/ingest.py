@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # Copyright 2026 NetApp Instaclustr contributors. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Governance Tiering: (re)index the curated recipe sample into Hybrid RAG (NER + Rerank)'s SAME
-`recipes-bm25` / `recipes-vector` indexes, this time assigning a real,
+"""Governance Tiering: (re)index the curated recipe sample, as chunks, into Hybrid RAG (NER + Rerank)'s
+SAME `recipes-bm25` / `recipes-vector` indexes, this time assigning a real,
 governance-driven `tier` value to every recipe instead of Hybrid RAG (NER + Rerank)'s
 placeholder default of "hot" for everything.
+
+The tier belongs to the RECIPE, so it is copied onto every chunk of that recipe, and the tier
+counts this script logs are counts of recipes, not of chunks.
 
 Tiering policy (the "governance" half of this pipeline's name):
     tier = "hot" if the recipe carries ANY allergen caution, else "lt".
@@ -22,13 +25,13 @@ query.py writes one governance record to per question.
 from __future__ import annotations
 
 import argparse
-import json
 from collections import Counter
 from pathlib import Path
 from typing import Sequence
 
 from tqdm import tqdm
 
+from .common.chunking import build_text, chunk_recipe, load_recipes
 from .common.config import RECIPES_SAMPLE_PATH, load_settings, require_configured
 from .common.embeddings import EmbeddingModel, to_list
 from .common.labels import normalize_values
@@ -36,6 +39,7 @@ from .common.logging import get_logger
 from .common.ner_client import NERClient
 from .common.opensearch_client import (
     create_client,
+    drop_index,
     ensure_audit_index,
     ensure_recipe_bm25_index,
     ensure_recipe_vector_index,
@@ -52,21 +56,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bm25-index-name", type=str, default=None)
     parser.add_argument("--vector-index-name", type=str, default=None)
     parser.add_argument("--audit-index-name", type=str, default=None)
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=32, help="Recipes per embedding batch")
+    parser.add_argument(
+        "--recreate", action="store_true",
+        help="Delete both recipe indexes first and rebuild them from empty (an index with the older one-document-per-recipe layout is replaced without this flag)",
+    )
     return parser.parse_args(argv)
-
-
-def build_text(recipe: dict) -> str:
-    lines = recipe.get("ingredient_lines") or []
-    cautions = recipe.get("cautions") or []
-    health = recipe.get("health_labels") or []
-    parts = [
-        f"{recipe['recipe_name']} (source: {recipe['source']})",
-        "Ingredients: " + "; ".join(lines) if lines else "",
-        f"Allergen cautions: {', '.join(cautions)}." if cautions else "Allergen cautions: none listed.",
-        f"Health labels: {', '.join(health)}." if health else "",
-    ]
-    return "\n".join(p for p in parts if p)
 
 
 def assign_tier(recipe: dict) -> str:
@@ -75,7 +70,8 @@ def assign_tier(recipe: dict) -> str:
     return "hot" if recipe.get("cautions") else "lt"
 
 
-def _shared_fields(recipe: dict, text: str) -> dict:
+def _shared_fields(recipe: dict, chunk: dict) -> dict:
+    """Fields common to both documents of one chunk: the recipe's fields (including its tier) plus the chunk's own."""
     return {
         "recipe_id": recipe["recipe_id"],
         "recipe_name": recipe["recipe_name"],
@@ -84,10 +80,11 @@ def _shared_fields(recipe: dict, text: str) -> dict:
         "image_url": recipe.get("image_url"),
         "servings": recipe.get("servings"),
         "calories": recipe.get("calories"),
-        "chunk_id": recipe["recipe_id"],
-        "chunk_index": 0,
-        "chunk_count": 1,
-        "text": text,
+        "chunk_id": chunk["chunk_id"],
+        "chunk_index": chunk["chunk_index"],
+        "chunk_count": chunk["chunk_count"],
+        "section": chunk["section"],
+        "text": chunk["text"],
         "cautions": normalize_values(recipe.get("cautions")),
         "cautions_display": recipe.get("cautions") or [],
         "diet_labels": normalize_values(recipe.get("diet_labels")),
@@ -108,7 +105,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise FileNotFoundError(f"{data_file} not found. See tasks/governance-tiering.md.")
 
     settings = load_settings()
-    require_configured(settings, need_bedrock=False)
+    require_configured(settings)
     bm25_index = args.bm25_index_name or settings.opensearch_recipe_bm25_index
     vector_index = args.vector_index_name or settings.opensearch_recipe_vector_index
     audit_index = args.audit_index_name or settings.opensearch_audit_index
@@ -116,41 +113,50 @@ def main(argv: Sequence[str] | None = None) -> None:
     client = create_client(settings)
     ner = NERClient(settings)
     embedder = EmbeddingModel(settings)
-    ensure_recipe_bm25_index(client, bm25_index)
-    ensure_recipe_vector_index(client, vector_index, embedder.dimension)
+    if args.recreate:
+        drop_index(client, bm25_index)
+        drop_index(client, vector_index)
+    ensure_recipe_bm25_index(client, bm25_index, replace_old_layout=True)
+    ensure_recipe_vector_index(client, vector_index, embedder.dimension, replace_old_layout=True)
     ensure_audit_index(client, audit_index)
 
-    recipes = json.loads(data_file.read_text(encoding="utf-8"))
+    recipes = load_recipes(data_file)
 
-    tier_counts: Counter = Counter()
+    tier_counts: Counter = Counter()  # counted per recipe, not per chunk
     total = 0
+    chunk_total = 0
     progress = tqdm(total=len(recipes), desc="Indexing", unit="recipes")
     try:
         for batch_start in range(0, len(recipes), args.batch_size):
             batch = recipes[batch_start : batch_start + args.batch_size]
-            texts = [build_text(r) for r in batch]
-            embeddings = embedder.encode(texts)
-            for recipe, text, embedding in zip(batch, texts, embeddings):
-                shared = _shared_fields(recipe, text)
-                tier_counts[shared["tier"]] += 1
-
-                ner_entities = ner.extract_entities(text)
-                entities = normalize_values(ner_entities + [recipe["source"], recipe["recipe_name"]])
+            pairs = [(r, c) for r in batch for c in chunk_recipe(r)]
+            embeddings = embedder.encode([c["text"] for _, c in pairs])
+            # Entities come from the recipe's facts once, then go on every one of its chunks.
+            entities_by_recipe = {
+                r["recipe_id"]: normalize_values(
+                    ner.extract_entities(build_text(r)) + [r["source"], r["recipe_name"]]
+                )
+                for r in batch
+            }
+            for recipe in batch:
+                tier_counts[assign_tier(recipe)] += 1
+            for (recipe, chunk), embedding in zip(pairs, embeddings):
+                shared = _shared_fields(recipe, chunk)
                 client.index(
                     index=bm25_index,
-                    id=recipe["recipe_id"],
-                    body={**shared, "entities": entities},
+                    id=chunk["chunk_id"],
+                    body={**shared, "entities": entities_by_recipe[recipe["recipe_id"]]},
                     refresh=False,
                 )
-
                 client.index(
                     index=vector_index,
-                    id=recipe["recipe_id"],
+                    id=chunk["chunk_id"],
                     body={**shared, "embedding": to_list(embedding)},
                     refresh=False,
                 )
-                progress.update(1)
-                total += 1
+                chunk_total += 1
+            progress.update(len(batch))
+            total += len(batch)
     finally:
         progress.close()
 
@@ -158,8 +164,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         client.indices.refresh(index=bm25_index)
         client.indices.refresh(index=vector_index)
     LOGGER.info(
-        "Ingested %d recipes into '%s' and '%s' -- tier distribution: hot=%d, lt=%d",
+        "Ingested %d recipes as %d chunks into '%s' and '%s' -- tier distribution (recipes): hot=%d, lt=%d",
         total,
+        chunk_total,
         bm25_index,
         vector_index,
         tier_counts.get("hot", 0),

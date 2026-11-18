@@ -1,6 +1,6 @@
-# The build context is the lab root. Never copy credentials or runtime state.
+# Build context is the rag-retrieval/ project root.
 .git
-.insta
+**/.git
 .env
 .env.*
 **/.env

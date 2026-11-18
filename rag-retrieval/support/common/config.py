@@ -17,6 +17,10 @@ from dotenv import load_dotenv
 
 # Curated 260-recipe sample shared by every ingest script (support/recipes/).
 RECIPES_SAMPLE_PATH = Path(__file__).resolve().parent.parent / "recipes" / "recipes_sample.json"
+# Synthetic intro / method / notes text for the same 260 recipes, keyed by recipe_id.
+# Chunking (common/chunking.py) splits this text and the recipe facts into the chunks
+# that every pipeline indexes and searches.
+RECIPES_SYNTHETIC_PATH = Path(__file__).resolve().parent.parent / "recipes" / "recipes_synthetic.json"
 
 _ENV_LOADED = False
 
@@ -118,7 +122,7 @@ class Settings:
     # OpenAI-compatible chat completions endpoint. Every pipeline still just
     # calls common.llm_client.generate() -- this only changes which backend
     # it talks to.
-    llm_provider: str = "bedrock"
+    llm_provider: str = "openai"
 
     # --- Amazon Bedrock ---
     aws_region: str = "us-east-1"
@@ -191,30 +195,25 @@ def load_settings() -> Settings:
     )
 
 
-def require_configured(settings: "Settings", *, need_bedrock: bool = True) -> None:
+def require_configured(settings: "Settings") -> None:
     """Fail fast with a clear message instead of a raw connection traceback.
 
     Every pipeline calls this right after loading settings, so missing values
     produces one actionable error instead of a urllib3/boto3 stack trace.
     """
     problems = []
-    if settings.opensearch_host in ("", "127.0.0.1", "your-cluster-host.instaclustr.com"):
-        problems.append("OPENSEARCH_HOST is not set to a real Instaclustr host")
-    if not settings.opensearch_user or not settings.opensearch_password:
-        problems.append("OPENSEARCH_USER / OPENSEARCH_PASSWORD are not set")
-    if need_bedrock:
-        if settings.llm_provider == "openai":
-            if not settings.openai_api_key:
-                problems.append("OPENAI_API_KEY is not set")
-            if not settings.openai_model:
-                problems.append("OPENAI_MODEL is not set")
-        elif settings.llm_provider == "bedrock":
-            if not settings.bedrock_model_id:
-                problems.append("BEDROCK_MODEL_ID is not set")
-        else:
-            problems.append(
-                f"LLM_PROVIDER={settings.llm_provider!r} is not recognized (use 'bedrock' or 'openai')"
-            )
+    if settings.llm_provider == "openai":
+        if not settings.openai_api_key:
+            problems.append("OPENAI_API_KEY is not set")
+        if not settings.openai_model:
+            problems.append("OPENAI_MODEL is not set")
+    elif settings.llm_provider == "bedrock":
+        if not settings.bedrock_model_id:
+            problems.append("BEDROCK_MODEL_ID is not set")
+    else:
+        problems.append(
+            f"LLM_PROVIDER={settings.llm_provider!r} is not recognized (use 'bedrock' or 'openai')"
+        )
 
     if problems:
         raise RuntimeError(

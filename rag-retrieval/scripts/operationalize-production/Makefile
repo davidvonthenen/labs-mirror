@@ -4,10 +4,13 @@
 PYTHON ?= python
 ARGS ?=
 
-.PHONY: install monitor policy validate clean
+.PHONY: install ner monitor policy validate clean
 
 install:
 	$(PYTHON) -m pip install -r ../../support/requirements.txt
+
+ner:
+	$(PYTHON) -m src.ner_service
 
 monitor:
 	$(PYTHON) -m src.monitor $(ARGS)

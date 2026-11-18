@@ -9,6 +9,8 @@ artifacts [Governance Tiering](governance-tiering.md) introduced
 hot/LT tiering policy) that didn't exist when this task was originally
 scoped.
 
+The NER service is a silent dependency: [Named-entity recognition in retrieval](../concepts/NER_IN_RETRIEVAL.md#failure-and-monitoring) explains why a stopped service raises no error, which is why this task monitors it.
+
 **A governance signal nobody watches is worthless.** Governance Tiering built the
 record you'd need to answer "why did it say that?" — this task makes sure
 someone (and something automated) is actually watching it, and that the
@@ -103,8 +105,10 @@ before this task ever *read* them back proactively. `monitor.py` queries
   `recipes-audit-log` that deletes the whole index once the index is
   `AUDIT_RETENTION_DAYS` old (default 180, counted from index creation).
   It removes the index, not individual old records, so recent records go
-  with it — currently the index grows unbounded with no lifecycle policy
-  at all.
+  with it. Without this policy the index would grow unbounded. If a policy
+  with that ID already exists, it is kept as it is, so an earlier policy
+  with a different number of days stays in force; the function does not
+  check the days.
 - **Write/delete access separation**: see the `audit_writer` /
   `audit_admin` roles in `src/hardening/opensearch_roles.json` (A, above) — an
   audit trail that the same credential can write *and* delete/edit isn't
@@ -159,7 +163,7 @@ probe target):
 
 ```bash
 source .venv/bin/activate
-cd scripts/baseline-bm25-rag
+cd scripts/operationalize-production
 python -m src.ner_service
 ```
 
@@ -196,7 +200,7 @@ escalation-rate drift, or an unhealthy NER service) — safe to wire into a
 cron job or CI check. `policy_registry.py` exits `1` on undocumented
 threshold drift.
 
-**Expected:** `monitor` prints a `GOVERNANCE MONITOR:` summary line and `No governance alerts.`, and exits `0`. `policy_registry` prints `POLICY REGISTRY: latest approved version=1 ...` followed by `[OK] Configured TIER_MIN_HOT_SCORE / TIER_MIN_HOT_CANDIDATES match the latest approved version.`, and exits `0`. The `approved_by` value in that first line reads `'TBD -- record the actual approver here'`: the checked-in `policy_history.json` ships a placeholder, and a team using this check would replace it with a real name when approving a version. If you have only run a single Governance Tiering query on an LT-tier question, the escalation rate can exceed `GOVERNANCE_MAX_ESCALATION_RATE` (0.5) and `monitor` will correctly report an alert; that is the monitor working, not a failure of the lab.
+**Expected:** `monitor` prints a `GOVERNANCE MONITOR:` summary line and `No governance alerts.`, and exits `0`. `policy_registry` prints `POLICY REGISTRY: latest approved version=1 ...` followed by `[OK] Configured TIER_MIN_HOT_SCORE / TIER_MIN_HOT_CANDIDATES match the latest approved version.`, and exits `0`. The `approved_by` value in that first line reads `'TBD -- record the actual approver here'`: the checked-in `policy_history.json` ships a placeholder, and a team using this check would replace it with a real name when approving a version. If you have only run a single Governance Tiering query on an LT-tier question, the escalation rate can exceed `GOVERNANCE_MAX_ESCALATION_RATE` (0.5) and `monitor` will correctly report an alert; that is the monitor working, not a failure of the lab. The same applies if you followed every earlier step exactly: Governance Tiering's Step 4 (three questions, two of them escalated), its `validate` (two questions, one escalated) and Step 2 above (one question, not escalated) leave the audit log with six records, three escalated, which is a rate of exactly 50%. The alert fires only above `GOVERNANCE_MAX_ESCALATION_RATE`, so that path passes with no margin: one more question that escalates, a second run of Governance Tiering's `validate`, or older records inside the 24-hour lookback can push `monitor` over the limit. Read such an alert as a statement about the mix of recent questions, and use `--lookback-hours` to narrow or widen the window.
 
 ### See the alert logic without the cluster
 
@@ -273,7 +277,13 @@ python -m src.validate
 3. **Audit retention policy** (live cluster): `ensure_audit_retention_policy()`
    runs idempotently against the real `recipes-audit-log` index. If the
    cluster's ISM plugin is unavailable, this is reported rather than
-   treated as a hard failure (see A, above).
+   treated as a hard failure (see C, above, and the manual fallback in the
+   [operational checklist](../references/OPERATIONAL_CHECKLIST.md#c-audit-log-hardening)).
+   `[PASS]` means the policy exists and the attach request was accepted. It
+   does not read the policy back, so it does not prove the policy's day count
+   matches `AUDIT_RETENTION_DAYS` or that no other policy already manages the
+   index. To see what governs the index, ask ISM:
+   `GET _plugins/_ism/explain/recipes-audit-log`.
 4. **Live governance stats** (live cluster): `audit_log_governance_stats()`
    returns well-formed rates (each in `[0, 1]`) against whatever real audit
    data Governance Tiering has already written.

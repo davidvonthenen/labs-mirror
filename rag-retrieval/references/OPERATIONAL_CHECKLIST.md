@@ -32,6 +32,11 @@ intentionally don't hold, so it stays a documented checklist item).
   `validate.py`) attaches an OpenSearch ISM retention policy
   (`AUDIT_RETENTION_DAYS`, default 180d) to `recipes-audit-log`. The policy
   deletes the whole index when it reaches that age, not individual records.
+- [ ] **Manual, only if the cluster has no ISM plugin.** `validate.py` then
+  prints `[SKIP]` for retention and nothing is deleted automatically. Pick a
+  retention period yourself and remove or snapshot old audit data on that
+  schedule by another route (for example a scheduled index delete through your
+  hosting provider's console or your own job).
 - [ ] **Manual.** Apply the `audit_writer` / `audit_admin` role separation
   from `scripts/operationalize-production/src/hardening/opensearch_roles.json` so the audit trail can't be
   edited/purged by the same credential that writes to it.

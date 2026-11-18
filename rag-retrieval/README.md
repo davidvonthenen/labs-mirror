@@ -57,7 +57,7 @@ before they show up in production, not after.
 
 | This Lab | Local Laptop | CLI | Notebook | Videos |
 | --- | --- | --- | --- | --- |
-| **RAG Developer Journey** | [Getting Started](#getting-started) | [Coding assistants](#learn-with-codex-claude-code-or-cursor) | _Coming soon_ | _Coming soon_ |
+| **RAG Developer Journey** | [Getting Started](#getting-started) | _Coming soon:_<br>Codex<br>Claude<br>Cursor | _Coming soon_ | _Coming soon_ |
 
 ## Tasks
 
@@ -77,7 +77,9 @@ These tasks are cumulative in setup and independent in content: Task 1 prepares 
 
 **What the retriever owns, and what the model does.** The retrieval steps in this lab decide which recipes, and which caution fields, reach the model. With the filters in Task 5, what is excluded stays excluded. The model then writes an answer from that text, and nothing in the retriever makes the wording correct. Task 6 checks that the answer's citations match what was retrieved and records the result; it does not block an answer.
 
-**A demonstration, not a benchmark.** The tasks use 260 recipes, one embedding model and a few questions, so they show *how* each approach fails and what fixes it, not *how often*. Scores and answer wording vary between runs.
+**About the data.** The recipes are a 260-recipe sample of a real dataset (names, sources, ingredients, allergen cautions and health labels). Tasks 2 to 6 split each recipe into chunks (1,823 in all) and search the chunks; see [Chunking](concepts/CHUNKING.md). The dataset has no method text, so the introduction, method and serving notes that give each recipe something to chunk are **synthetic**: an LLM wrote them from each recipe's ingredient list (`support/recipes/recipes_synthetic.json`). They are not the original websites' text and not tested recipes, so do not cook from them. The ingredients, cautions and labels, which decide every safety fact in the lab, come from the original dataset.
+
+**A demonstration, not a benchmark.** The tasks use 260 recipes, one embedding model and a few questions, so they show *how* each approach fails and what fixes it, not *how often*. Scores and answer wording vary between runs: scores can differ in the last digits between clusters, and hits with exactly equal scores can come back in a different order.
 
 **Concepts.** These pages explain the choices behind the tasks, with live probes on this lab's data: [BM25 versus kNN](concepts/BM25_VS_KNN.md), [embedding models](concepts/EMBEDDING_MODELS.md), [chunking](concepts/CHUNKING.md), [named-entity recognition](concepts/NER_IN_RETRIEVAL.md) and [choosing a retrieval approach](concepts/CHOOSING_RETRIEVAL.md). Why each piece of infrastructure was chosen is in [`INFRASTRUCTURE_CHOICES.md`](concepts/INFRASTRUCTURE_CHOICES.md).
 
@@ -89,7 +91,7 @@ Setup problems: [`troubleshooting/setup-environment.md`](troubleshooting/setup-e
 
 ## Getting Started
 
-This lab is the `rag-retrieval/` folder of the [instaclustr/labs](https://github.com/instaclustr/labs) repository; Task 1 shows how to clone it. You need Python 3.10 or newer; Python 3.12 is the default recommended version. The only accounts you need are an [Instaclustr](https://www.instaclustr.com/) OpenSearch cluster and one LLM provider, either AWS Bedrock with model access enabled or an OpenAI-compatible API key. Task 1 walks through the environment, the dependencies, and the one `.env` file every task shares, and ends with a configuration check.
+This lab is the `rag-retrieval/` folder of the [instaclustr/labs](https://github.com/instaclustr/labs) repository; Task 1 shows how to clone it. You need Python 3.10 or newer; Python 3.12 is the default recommended version. The only accounts you need are an [Instaclustr](https://www.instaclustr.com/) OpenSearch cluster and one LLM provider, either AWS Bedrock with model access enabled or an OpenAI-compatible API key (Bedrock is the path tested end to end; see Task 1 for the OpenAI note). Task 1 walks through the environment, the dependencies, and the one `.env` file every task shares, and ends with a configuration check.
 
 Every task runs from its own directory under `scripts/`, with `python -m src.<module>` or the matching `make` target. Some tasks need the local NER service from Baseline BM25 RAG running in a second terminal. Each task page says when.
 
@@ -97,37 +99,7 @@ Every task runs from its own directory under `scripts/`, with `python -m src.<mo
 
 ## Learn with Codex, Claude Code, or Cursor
 
-Open the complete `rag-retrieval/` folder in your coding tool. The human task
-pages, source maps, and code are also the template that an agent uses to explain
-the lab, make a scoped change, or build a retrieval project for another corpus.
-
-Start with [AGENTS.md](AGENTS.md) and
-[Using this workshop as a project template](USING_THE_TEMPLATE.md). The
-[task manifest](references/lab.json) records exact working directories,
-command arguments, prerequisites, side effects, and acceptance conditions.
-The [agent runtime contract](references/agent-contracts.md) explains how to
-interpret the existing commands and which operations modify resources.
-
-Codex can use the repository-local `instaclustr-rag-builder` Skill under
-[`.agents/skills/`](.agents/skills/instaclustr-rag-builder/SKILL.md). For example:
-
-```text
-Use $instaclustr-rag-builder to help me build a project from this workshop.
-Read USING_THE_TEMPLATE.md and the relevant source before editing. Help me
-select a retrieval pattern for my corpus, implement the scoped adaptation,
-and verify the result using the existing commands and documented effects.
-```
-
-For another coding tool, explicitly ask it to read `AGENTS.md`, the local
-Skill's Markdown, and the selected task's source map. Automatic instruction
-discovery depends on the client. The guide includes
-[portable and project-building prompts](USING_THE_TEMPLATE.md#7-prompts-for-coding-tools).
-
-Before connecting to services, install `support/requirements-test.txt` in the
-selected environment and run `python scripts/validate_lab.py` from the lab
-root. It checks the local documentation and metadata; task `make validate`
-commands remain separate live checks. For the managed Go CLI workflow, use
-[INSTA.md](INSTA.md) and [insta.yaml](insta.yaml).
+Coming Soon
 
 ## Jupyter Notebook
 

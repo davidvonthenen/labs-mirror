@@ -2,6 +2,8 @@
 
 Every task in this lab runs against the same Instaclustr OpenSearch cluster and the same LLM provider, from one Python environment and one `.env` file. In this task you prepare that shared workspace once, then run a setup check before you start Baseline Vector RAG.
 
+Why these services and models were chosen is explained in [Infrastructure choices](../concepts/INFRASTRUCTURE_CHOICES.md) and [Embedding models](../concepts/EMBEDDING_MODELS.md#why-this-lab-uses-minilm).
+
 ## What you will learn
 
 You will clone the lab, create its Python environment, install the shared dependencies, configure the services every task uses, and run a setup check that reports problems by name without printing a secret.
@@ -22,17 +24,32 @@ The [environment reference](../references/setup-environment.md) records the exac
 
 ### Accounts you'll need
 
-- An [Instaclustr](https://www.instaclustr.com/) OpenSearch cluster. Every task shares one cluster; each task just uses different index names.
+- An [Instaclustr](https://www.instaclustr.com/) OpenSearch cluster, set up as in [Your OpenSearch cluster](#your-opensearch-cluster). Every task shares one cluster; each task just uses different index names.
 - An LLM provider. Pick one:
   - An AWS account with **Bedrock model access enabled** for at least one Anthropic Claude model (AWS console → Bedrock → Model access; this is a separate opt-in step per model, not automatic), **or**
   - An OpenAI (or OpenAI-compatible) API key, with no AWS account needed. Set `LLM_PROVIDER=openai` in `.env` (see step 3).
-- (Optional) A [HuggingFace](https://huggingface.co/) token. The first run downloads the embedding model from HuggingFace; setting `HF_TOKEN` in `.env` gives higher download rate limits and removes the "unauthenticated requests" warning. Nothing requires it, and the recipe sample is already included, so no dataset download is needed.
+- (Optional) A [HuggingFace](https://huggingface.co/) token. The first run downloads the embedding model from HuggingFace; setting `HF_TOKEN` in `.env` gives higher download rate limits and removes the "unauthenticated requests" warning. It does not affect `404 Not Found` lines in the log (see [the troubleshooting entry](../troubleshooting/setup-environment.md#404-not-found-lines-from-huggingfaceco-in-the-log)). Nothing requires it, and the recipe sample is already included, so no dataset download is needed.
 
 The cluster and the LLM provider are paid services, so check each provider's pricing or trial terms first. The query steps in Tasks 2 to 6 make LLM calls that your provider bills.
 
+### Your OpenSearch cluster
+
+Your cluster needs the following:
+
+- **OpenSearch 3.6.0.** This is the version the lab was tested on. Other versions were not tested. Hybrid search (Hybrid RAG (Native)) needs OpenSearch 2.10 or later, the release that introduced the `hybrid` query; that is from the OpenSearch documentation and was not tested here.
+- **The AI Search plugin.** Enable it when you create the cluster. It turns on the k-NN plugin automatically, and these two are the only plugins the vector and hybrid tasks need. `validate_setup.py --check-opensearch` (Step 4) reports the AI Search plugin as `neural-search`.
+- **The Index Management plugin.** It is normally enabled when a cluster is created. If it isn't on your cluster, enable it. Operationalize Production uses it for audit-log retention, and the same check reports whether it is present.
+- **An admin account.** Use the default admin user from the console's **Connection Info** page (Step 3 shows where). The lab creates indexes, writes documents and searches. It deletes only its own indexes (with `--recreate`, or an index with the older layout at ingest), and Hybrid RAG (Native) creates the cluster-level `hybrid-search-pipeline`. A read-only or search-only account fails at ingest. The lab never changes cluster settings or snapshots, which Instaclustr asks you not to give to any user. The role definitions in [`opensearch_roles.json`](../scripts/operationalize-production/src/hardening/opensearch_roles.json) are illustrative and were not tested against the lab. Its `recipe_writer` role lacks delete, refresh and search-pipeline permissions, so do not use it to run the lab as it is.
+- **No other settings.** The lab sets `index.knn` on each index itself, so no cluster-wide setting is needed. The data is small (1,823 chunks), and the lab sets no sizing requirement; other cluster sizes were not tested.
+
+### Which models
+
+- **Embedding model: keep the default,** `sentence-transformers/all-MiniLM-L6-v2`. It is small (384 dimensions, about 90 MB), runs on a CPU, needs no account, and downloads on first use. Every index in the lab is built with it, so if you change `EMBEDDING_MODEL` you must re-ingest every task ([Switching the embedding model safely](../concepts/EMBEDDING_MODELS.md#switching-the-embedding-model-safely)).
+- **LLM: a small, low-cost chat model is enough.** The lab was run with Claude Haiku 4.5 through Amazon Bedrock. Choose any model your account can call, and use the exact ID, or inference profile ID, that your provider's console shows. Task 6 asks the model to cite its sources as `[R1]`-style tags, so choose one that follows that instruction. Other models were not tested.
+
 ## Before you begin
 
-You need a Bash or zsh terminal, Git, and Python 3.10 or newer with `venv` (Python 3.12 is the default recommended version). The accounts above must exist, and for Bedrock, model access must already show as granted in the AWS console.
+You need a Bash or zsh terminal, Git, and Python 3.10 or newer with `venv` (Python 3.12 is the default recommended version). The accounts above must exist, and for Bedrock, model access must already show as granted in the AWS console. Your cluster needs the plugins and the admin account described in [Your OpenSearch cluster](#your-opensearch-cluster), and you can keep the default models ([Which models](#which-models)).
 
 Installing dependencies downloads packages from PyPI and the spaCy model. Running any task later also downloads the embedding model into `.cache/` on first use. Keep `.env` private: it holds your cluster password and LLM credentials, and it is git-ignored for that reason.
 
@@ -63,6 +80,17 @@ Use `python3.12` above for the default environment, or the executable for anothe
 
 ## Step 3: configure
 
+**Where to find your connection settings.** In the Instaclustr console, open your cluster, then **Connection Info**, then **OpenSearch REST API**, and select the **Connecting via Load Balancer** tab. That is the connection the lab was tested with, and it needs no sniffing configuration in the client.
+
+| The console shows | Put in `.env` |
+| --- | --- |
+| The load balancer URL, `https://load-balancer.<id>.cnodes.io:9200` | `OPENSEARCH_HOST=load-balancer.<id>.cnodes.io` (the host only: no `https://` and no port) |
+| Port 9200 | `OPENSEARCH_PORT=9200` |
+| **Default Credentials for Password Authentication**: the username and password | `OPENSEARCH_USER` and `OPENSEARCH_PASSWORD` |
+| The certificate (signed by Let's Encrypt, trusted by default) | `OPENSEARCH_SSL=true`. There is nothing to install. |
+
+Before the lab can connect, add your machine's public IP address to the cluster's firewall rules; the same page says so. The console removes the default password from its records five days after the cluster is provisioned, so save it, or change it and use the new one. Instaclustr recommends changing it anyway.
+
 ```bash
 cp support/.env.example .env
 # then edit .env: OPENSEARCH_HOST/USER/PASSWORD, and either --
@@ -73,7 +101,7 @@ cp support/.env.example .env
 
 **Expected:** `.env` exists at the lab root, next to `README.md`. Every task finds it there through [`load_settings()`](../support/common/config.py), whichever `scripts/<task-id>/` directory you run from.
 
-**If someone else uses the same cluster,** index names are global to the cluster, so two people running the lab would overwrite each other's data. Give your indexes a suffix by adding these lines to `.env` (replace `yourname`):
+**If someone else uses the same cluster,** index names are global to the cluster, so two people running the lab would overwrite each other's data. (Ingest also deletes and re-creates an existing index of the same name when it has the older one-document-per-recipe layout, so use a suffix rather than sharing names with someone else's data. A query never deletes an index.) Give your indexes a suffix by adding these lines to `.env` (replace `yourname`):
 
 ```bash
 OPENSEARCH_VECTOR_RECIPES_BASELINE_INDEX=recipes-vector-baseline-yourname
@@ -118,7 +146,7 @@ The offline check confirms that values are present, not that the cluster or mode
 python support/validate_setup.py --check-opensearch --check-embeddings
 ```
 
-**Expected:** two more `[PASS]` lines, `opensearch: cluster reachable, OpenSearch <version>; neural-search plugin: yes; index-management (ISM) plugin: yes` and `embeddings: sentence-transformers/all-MiniLM-L6-v2 loaded, 384 dimensions`. The first run downloads the embedding model, so it takes longer. `opensearch` is read-only: it asks the cluster for its version and plugin list and changes nothing. If it prints `[WARN]` with `neural-search plugin: NO`, Hybrid RAG (Native) will not work on that cluster. A missing ISM plugin only means Operationalize Production reports `[SKIP]` for retention. If the check fails, check the host, port, credentials, and your cluster's IP allow-list.
+**Expected:** two more `[PASS]` lines, `opensearch: cluster reachable, OpenSearch <version>; neural-search plugin: yes; index-management (ISM) plugin: yes` and `embeddings: sentence-transformers/all-MiniLM-L6-v2 loaded, 384 dimensions`. The first run downloads the embedding model, so it takes longer. `opensearch` is read-only: it asks the cluster for its version and plugin list and changes nothing. If it prints `[WARN]` with `neural-search plugin: NO` (the AI Search plugin in the Instaclustr console), Hybrid RAG (Native) will not work on that cluster. A missing ISM plugin only means Operationalize Production reports `[SKIP]` for retention. If the check fails, check the host, port, credentials, and your cluster's IP allow-list.
 
 ## Step 5: pick a task
 

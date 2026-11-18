@@ -4,8 +4,10 @@
 """Governance Tiering: hot-tier-first retrieval with governance-driven escalation to the
 long-term (LT) tier, plus an audit trail of every tiering decision.
 
-Builds directly on Hybrid RAG (NER + Rerank)'s ground (BM25) -> refine (vector) pipeline, with
-one addition: the BM25 grounding step is first restricted to `tier=hot`
+Builds directly on Hybrid RAG (NER + Rerank)'s ground (BM25) -> refine (vector) pipeline, over
+recipe CHUNKS (see common/chunking.py). Searches return chunks and `group_by_recipe` folds them
+back into recipes, so every count below -- hot hits, candidates, evidence handles -- counts
+recipes, not chunks. One addition: the BM25 grounding step is first restricted to `tier=hot`
 (fast, safety-critical data only). If that search isn't confident --  either
 too few candidates, or the top score is weak -- the system ESCALATES to a
 second grounding search across both tiers. Every query, regardless of
@@ -33,10 +35,12 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .common import llm_client
+from .common.chunking import chunk_fetch, group_by_recipe
 from .common.config import load_settings, require_configured
 from .common.embeddings import EmbeddingModel, to_list
 from .common.ner_client import NERClient
 from .common.opensearch_client import (
+    ann_pool_for_filtered_search,
     bm25_search,
     create_client,
     ensure_audit_index,
@@ -45,16 +49,6 @@ from .common.opensearch_client import (
     parse_field_value_pairs,
     recipe_knn_search,
 )
-
-# How many nearest neighbors OpenSearch's kNN considers BEFORE the
-# `include_recipe_ids` filter is applied (see `build_recipe_vector_query` --
-# the filter is a post-filter, not a pre-filter). This must be large enough
-# to cover the whole corpus, or a grounding candidate with weak *vector*
-# similarity to the question (like a specific recipe named by source, which
-# Baseline Vector RAG already showed can drop out of the global top-25 nearest
-# neighbors entirely) would be silently excluded from the refine step even
-# though BM25 grounding correctly found it.
-REFINE_ANN_POOL = 300
 
 BASE_SYSTEM_PROMPT = (
     "You are a fact-focused recipe assistant. If the answer is not grounded in the "
@@ -117,7 +111,7 @@ def _build_context(hits: List[dict]) -> str:
             f"recipe_name={hit.get('recipe_name', 'unknown')}, source={hit.get('source', 'unknown')}, "
             f"tier={hit.get('tier', 'unknown')}, "
             f"cautions={', '.join(hit.get('cautions_display') or []) or 'none listed'}\n"
-            f"{(hit.get('text') or '')[:900]}\n"
+            f"{(hit.get('text') or '')[:1800]}\n"
             f"[/{handle}]"
         )
     return "\n\n".join(parts)
@@ -185,9 +179,10 @@ def ask(
     entities = ner.extract_entities(question)
 
     hot_response = bm25_search(
-        client, bm25_index, question, k=candidate_k, entities=entities, exclude=exclude, require=require, tier="hot"
+        client, bm25_index, question, k=chunk_fetch(candidate_k), entities=entities, exclude=exclude, require=require, tier="hot"
     )
-    hot_hits = normalize_hits(hot_response)
+    # Chunks in, recipes out: everything after this line counts recipes.
+    hot_hits = group_by_recipe(normalize_hits(hot_response), top_k=candidate_k)
     top_score = hot_hits[0]["score"] if hot_hits else 0.0
 
     named_sources = _extract_domain_tokens(question)
@@ -211,9 +206,9 @@ def ask(
         else:
             escalation_reason = "low_confidence_hot_score"
         full_response = bm25_search(
-            client, bm25_index, question, k=candidate_k, entities=entities, exclude=exclude, require=require, tier=None
+            client, bm25_index, question, k=chunk_fetch(candidate_k), entities=entities, exclude=exclude, require=require, tier=None
         )
-        grounding_hits = normalize_hits(full_response)
+        grounding_hits = group_by_recipe(normalize_hits(full_response), top_k=candidate_k)
         tiers_searched = ["hot", "lt"]
     else:
         grounding_hits = hot_hits
@@ -221,25 +216,56 @@ def ask(
 
     candidate_ids = [h["recipe_id"] for h in grounding_hits if h.get("recipe_id")]
 
+    pinned_sources: List[str] = []
     if candidate_ids:
         query_vec = to_list(embedder.encode([question])[0])
+        # The recipe_id filter runs after the kNN search, so the kNN step must consider every chunk.
+        ann_pool = ann_pool_for_filtered_search(client, vector_index)
         refine_response = recipe_knn_search(
             client,
             vector_index,
             query_vec,
-            k=top_k,
-            candidate_k=max(REFINE_ANN_POOL, len(candidate_ids)),
+            k=chunk_fetch(top_k),
+            candidate_k=ann_pool,
             include_recipe_ids=candidate_ids,
             exclude=exclude,
             require=require,
         )
-        refined_hits = _assign_handles(normalize_hits(refine_response))
+        refined = group_by_recipe(normalize_hits(refine_response), top_k=top_k)
+
+        # Named-source rule. A question like "does the X.com recipe contain sulfites?" matches the
+        # allergen chunk of EVERY recipe, so the vector step can bury the recipe the user named even
+        # though BM25 grounding ranked it first. If the question names a source and no refined recipe
+        # comes from it, pin the best grounded recipe from that source into the evidence, using its
+        # own best-matching chunks, and record the pin in the audit log.
+        for token in named_sources:
+            if any(token in (h.get("source") or "").lower() for h in refined):
+                continue
+            named = next((h for h in grounding_hits if token in (h.get("source") or "").lower()), None)
+            if not named:
+                continue
+            pin_response = recipe_knn_search(
+                client,
+                vector_index,
+                query_vec,
+                k=chunk_fetch(1),
+                candidate_k=ann_pool,
+                include_recipe_ids=[named["recipe_id"]],
+                exclude=exclude,
+                require=require,
+            )
+            refined += group_by_recipe(normalize_hits(pin_response), top_k=1)
+            pinned_sources.append(token)
+
+        refined_hits = _assign_handles(refined)
         context_block = _build_context(refined_hits)
     else:
         refined_hits = []
         context_block = "No recipes matched the requested constraints."
 
     evidence_handles = [h["handle"] for h in refined_hits]
+    # The exact chunks shown to the model, so the audit log can say which passage backed an answer.
+    evidence_chunk_ids = [c.get("chunk_id") for h in refined_hits for c in h.get("chunks", []) if c.get("chunk_id")]
     system_prompt = _build_system_prompt(evidence_handles)
     prompt = f"Question:\n{question}\n\nContext:\n{context_block}"
     answer = llm_client.generate(prompt, settings=settings, system=system_prompt)
@@ -256,6 +282,8 @@ def ask(
         "hot_hit_count": len(hot_hits),
         "hot_top_score": top_score,
         "evidence_handles": evidence_handles,
+        "evidence_chunk_ids": evidence_chunk_ids,
+        "pinned_named_sources": pinned_sources,
         "cited_handles": cited_handles,
         "hallucinated_citations": hallucinated_citations,
         "citations_valid": citations_valid,
@@ -276,6 +304,8 @@ def ask(
         "refined_sources": [h.get("source") for h in refined_hits if h.get("source")],
         "refined_cautions": sorted({c for h in refined_hits for c in (h.get("cautions_display") or [])}),
         "evidence_handles": evidence_handles,
+        "evidence_chunk_ids": evidence_chunk_ids,
+        "pinned_named_sources": pinned_sources,
         "cited_handles": cited_handles,
         "hallucinated_citations": hallucinated_citations,
         "citations_valid": citations_valid,
@@ -323,25 +353,28 @@ def main(argv: Sequence[str] | None = None) -> None:
             f"reason={meta['escalation_reason']} hot_hits={meta['hot_hit_count']} "
             f"hot_top_score={meta['hot_top_score']:.4f}"
         )
+        if meta["pinned_named_sources"]:
+            print(f"PINNED: named source(s) {meta['pinned_named_sources']} added to the evidence after the vector refine")
         print(
             f"CITATIONS: evidence={meta['evidence_handles']} cited={meta['cited_handles']} "
             f"hallucinated={meta['hallucinated_citations']} valid={meta['citations_valid']}"
         )
         print(f"ANSWER: {answer}")
-        print(f"\nGROUNDING ({len(grounding_hits)} candidates from tier(s) {meta['tiers_searched']}):")
+        print(f"\nGROUNDING ({len(grounding_hits)} candidate recipes from tier(s) {meta['tiers_searched']}):")
         for hit in grounding_hits[:10]:
             print(
                 f"  - {hit.get('recipe_name', 'unknown')} | source={hit.get('source', 'unknown')} "
                 f"| tier={hit.get('tier')} | cautions={hit.get('cautions_display')} | score={hit.get('score', 0.0):.4f}"
             )
-        print(f"\nREFINED (vector rerank, top {len(refined_hits)}):")
+        print(f"\nREFINED (vector rerank, top {len(refined_hits)} recipes; matching chunks in brackets):")
         for hit in refined_hits:
+            sections = ", ".join(c.get("section", "?") for c in hit.get("chunks", []))
             print(
                 f"  - [{hit.get('handle', '?')}] {hit.get('recipe_name', 'unknown')} | source={hit.get('source', 'unknown')} "
-                f"| tier={hit.get('tier')} | cautions={hit.get('cautions_display')} | score={hit.get('score', 0.0):.4f}"
+                f"| tier={hit.get('tier')} | cautions={hit.get('cautions_display')} | score={hit.get('score', 0.0):.4f} | [{sections}]"
             )
         print("=" * 88)
-        print(f"Query time: {dt:.2f}s | Docs provided to LLM: {len(refined_hits)}\n")
+        print(f"Query time: {dt:.2f}s | Recipes provided to LLM: {len(refined_hits)}\n")
 
 
 if __name__ == "__main__":

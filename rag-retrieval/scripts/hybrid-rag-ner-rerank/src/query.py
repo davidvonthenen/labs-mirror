@@ -18,6 +18,11 @@ It's an *externally orchestrated* two-phase pipeline:
      final ranking reflects semantic relevance to the actual question --
      without ever letting an excluded/non-conforming recipe back in.
 
+Both indexes hold chunks, so each search returns chunks. After each one, `group_by_recipe` folds
+the chunks back into recipes: the grounding step produces a set of RECIPES, and the refine step is
+restricted to those recipe_ids. Every chunk carries its recipe's cautions, so a hard filter
+removes all chunks of a recipe that has the caution.
+
 See tasks/hybrid-rag-ner-rerank.md for why Hybrid RAG (Native)'s native
 hybrid pipeline can't make the same guarantee.
 """
@@ -28,10 +33,12 @@ import time
 from typing import Dict, List, Optional, Sequence
 
 from .common import llm_client
+from .common.chunking import chunk_fetch, group_by_recipe
 from .common.config import load_settings, require_configured
 from .common.embeddings import EmbeddingModel, to_list
 from .common.ner_client import NERClient
 from .common.opensearch_client import (
+    ann_pool_for_filtered_search,
     bm25_search,
     create_client,
     normalize_hits,
@@ -53,7 +60,7 @@ def _build_context(hits: List[dict]) -> str:
         parts.append(
             f"[RECIPE {idx} | {hit.get('recipe_name', 'unknown')} | source: {hit.get('source', 'unknown')} | "
             f"cautions: {', '.join(hit.get('cautions_display') or []) or 'none listed'}]\n"
-            f"{(hit.get('text') or '')[:900]}"
+            f"{(hit.get('text') or '')[:1800]}"
         )
     return "\n\n".join(parts)
 
@@ -80,9 +87,9 @@ def ask(
 
     entities = ner.extract_entities(question)
     grounding_response = bm25_search(
-        client, bm25_index, question, k=candidate_k, entities=entities, exclude=exclude, require=require
+        client, bm25_index, question, k=chunk_fetch(candidate_k), entities=entities, exclude=exclude, require=require
     )
-    grounding_hits = normalize_hits(grounding_response)
+    grounding_hits = group_by_recipe(normalize_hits(grounding_response), top_k=candidate_k)
     candidate_ids = [h["recipe_id"] for h in grounding_hits if h.get("recipe_id")]
 
     if not candidate_ids:
@@ -97,17 +104,19 @@ def ask(
         )
 
     query_vec = to_list(embedder.encode([question])[0])
+    # The recipe_id filter is applied after the nearest-neighbour search, so the kNN step has to
+    # consider every chunk, or a candidate that BM25 found could be dropped here.
     refine_response = recipe_knn_search(
         client,
         vector_index,
         query_vec,
-        k=top_k,
-        candidate_k=candidate_k,
+        k=chunk_fetch(top_k),
+        candidate_k=ann_pool_for_filtered_search(client, vector_index),
         include_recipe_ids=candidate_ids,
         exclude=exclude,
         require=require,
     )
-    refined_hits = normalize_hits(refine_response)
+    refined_hits = group_by_recipe(normalize_hits(refine_response), top_k=top_k)
     context_block = _build_context(refined_hits)
 
     prompt = f"Question:\n{question}\n\nContext:\n{context_block if context_block else 'No context available.'}"
@@ -152,20 +161,21 @@ def main(argv: Sequence[str] | None = None) -> None:
             print(f"REQUIRE: {require}")
         print("=" * 88)
         print(f"ANSWER: {answer}")
-        print(f"\nGROUNDING (BM25, {len(grounding_hits)} candidates, filters applied):")
+        print(f"\nGROUNDING (BM25, {len(grounding_hits)} candidate recipes, filters applied):")
         for hit in grounding_hits[:10]:
             print(
                 f"  - {hit.get('recipe_name', 'unknown')} | source={hit.get('source', 'unknown')} "
                 f"| cautions={hit.get('cautions_display')} | score={hit.get('score', 0.0):.4f}"
             )
-        print(f"\nREFINED (vector rerank of grounding set, top {len(refined_hits)}):")
+        print(f"\nREFINED (vector rerank of grounding set, top {len(refined_hits)} recipes; matching chunks in brackets):")
         for hit in refined_hits:
+            sections = ", ".join(c.get("section", "?") for c in hit.get("chunks", []))
             print(
                 f"  - {hit.get('recipe_name', 'unknown')} | source={hit.get('source', 'unknown')} "
-                f"| cautions={hit.get('cautions_display')} | score={hit.get('score', 0.0):.4f}"
+                f"| cautions={hit.get('cautions_display')} | score={hit.get('score', 0.0):.4f} | [{sections}]"
             )
         print("=" * 88)
-        print(f"Query time: {dt:.2f}s | Docs provided to LLM: {len(refined_hits)}\n")
+        print(f"Query time: {dt:.2f}s | Recipes provided to LLM: {len(refined_hits)}\n")
 
 
 if __name__ == "__main__":

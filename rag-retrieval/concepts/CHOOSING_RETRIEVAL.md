@@ -17,8 +17,8 @@ All five approaches answer the same first question: *which stored recipes should
 | If you need | Use | Task | What it adds | What it still cannot do |
 | --- | --- | --- | --- | --- |
 | Questions that name exact things: a recipe name, a source, an ingredient word | **BM25** keyword search | [3](../tasks/baseline-bm25-rag.md) | A text index. No model. You can explain a hit by the words it matched | Find a recipe the question only describes. See [BM25 versus kNN, Probe 1](BM25_VS_KNN.md#probe-1-put-the-same-queries-through-both-retrievers) |
-| Questions phrased differently from the stored text | **Vector (kNN)** search | [2](../tasks/baseline-vector-rag.md) | An embedding model to load and run, a vector field, and ingest time to embed every recipe | Guarantee that an exact name match is in the results. See [Probe 4](BM25_VS_KNN.md#probe-4-how-deep-the-missed-recipe-sits) |
-| Both kinds of question in one system | **Hybrid** BM25 + kNN | [4](../tasks/hybrid-rag-native.md) | Everything above, plus a search pipeline on the cluster and a pair of weights to tune | Remove the trade-off between the two. See [the weights](BM25_VS_KNN.md#hybrid-fusion-and-the-weights-03-and-07) |
+| Questions phrased differently from the stored text | **Vector (kNN)** search | [2](../tasks/baseline-vector-rag.md) | An embedding model to load and run, a vector field, and ingest time to embed every chunk | Guarantee that an exact name match is in the results. See [Probe 4](BM25_VS_KNN.md#probe-4-how-deep-the-missed-recipe-sits) |
+| Both kinds of question in one system | **Hybrid** BM25 + kNN | [4](../tasks/hybrid-rag-native.md) | Everything above, plus a search pipeline on the cluster and a pair of weights to tune | Remove the trade-off between the two. See [the weights](BM25_VS_KNN.md#hybrid-fusion-and-the-weights) |
 | Results that must never include something, such as an allergen | **Filters** in a two-phase design (ground, then refine) | [5](../tasks/hybrid-rag-ner-rerank.md) | Two queries to orchestrate in client code, fields to store the filter values in, and (optionally) the [NER service](NER_IN_RETRIEVAL.md) for the entity boost | Filter on something you did not store. Keep recall when the vector step's neighbour pool is small: the filter is applied after the neighbours are taken (4 of 25 candidates survived at `candidate-k` 25 in the Task 5 check) |
 | Different criticality of data, and answers you can trace after the fact | **Governance**: tiering, citation tags, audit log | [6](../tasks/governance-tiering.md), [7](../tasks/operationalize-production.md) | A tier policy, an audit index, mandatory citations, and a monitor and retention policy to run | Enforce anything by itself: citations are checked and recorded, not blocked. A tier is a label on a recipe, not a different kind of storage |
 
@@ -34,7 +34,7 @@ Ask these in order, and stop at the first step that satisfies your requirement.
 
 Two further points:
 
-- **Entities are optional at every step.** The NER service of Tasks 3, 5 and 6 adds a source-selecting boost and a second process to run. Task 4 retrieves the same Fish and Chips pair without it. See [Named-entity recognition in retrieval](NER_IN_RETRIEVAL.md) for when it is worth having.
+- **Entities are optional at every step.** The NER service of Tasks 3, 5 and 6 adds a small boost and a second process to run (in the chunked indexes, the source name that starts every chunk already does most of the source selecting). Task 4 retrieves the same Fish and Chips pair without it. See [Named-entity recognition in retrieval](NER_IN_RETRIEVAL.md) for when it is worth having.
 - **Each step you add is a thing to keep running.** The embedding model, the search pipeline, the NER service and the audit index each fail in their own way. [Infrastructure choices](INFRASTRUCTURE_CHOICES.md) lists what runs where.
 
 ## Tradeoffs and limits

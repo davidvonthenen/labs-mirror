@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 # Copyright 2026 NetApp Instaclustr contributors. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Baseline Vector RAG: ask questions against the recipe vector index using Bedrock for generation."""
+"""Baseline Vector RAG: ask questions against the recipe vector index using Bedrock for generation.
+
+The index holds chunks, so the kNN search returns chunks. `group_by_recipe` folds them back
+into recipes (best chunk score per recipe) and the LLM sees each recipe's best-matching
+chunks as its evidence.
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +14,7 @@ import time
 from typing import List, Sequence
 
 from .common import llm_client
+from .common.chunking import chunk_fetch, group_by_recipe
 from .common.config import load_settings, require_configured
 from .common.embeddings import EmbeddingModel, to_list
 from .common.opensearch_client import create_client, ensure_recipe_vector_index, normalize_hits, recipe_knn_search
@@ -25,7 +31,7 @@ def _build_context(hits: List[dict]) -> str:
     for idx, hit in enumerate(hits, start=1):
         parts.append(
             f"[RECIPE {idx} | {hit.get('recipe_name', 'unknown')} | source: {hit.get('source', 'unknown')}]\n"
-            f"{(hit.get('text') or '')[:900]}"
+            f"{(hit.get('text') or '')[:1800]}"
         )
     return "\n\n".join(parts)
 
@@ -39,8 +45,9 @@ def ask(question: str, *, top_k: int, num_candidates: int) -> tuple[str, List[di
     ensure_recipe_vector_index(client, index_name, embedder.dimension)
 
     query_vec = to_list(embedder.encode([question])[0])
-    response = recipe_knn_search(client, index_name, query_vec, k=top_k, candidate_k=num_candidates)
-    hits = normalize_hits(response)
+    n_chunks = chunk_fetch(top_k)  # ask for more chunks than recipes: one recipe can fill several slots
+    response = recipe_knn_search(client, index_name, query_vec, k=n_chunks, candidate_k=max(num_candidates, n_chunks))
+    hits = group_by_recipe(normalize_hits(response), top_k=top_k)
     context_block = _build_context(hits)
 
     prompt = f"Question:\n{question}\n\nContext:\n{context_block if context_block else 'No context available.'}"
@@ -68,14 +75,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"QUESTION: {q}")
         print("=" * 88)
         print(f"ANSWER: {answer}")
-        print("\nRAG Hits:")
+        print("\nRAG Hits (recipes, best chunk score; matching chunks in brackets):")
         for hit in hits:
+            sections = ", ".join(c.get("section", "?") for c in hit.get("chunks", []))
             print(
                 f"  - {hit.get('recipe_name', 'unknown')} | source={hit.get('source', 'unknown')} "
-                f"| score={hit.get('score', 0.0):.4f}"
+                f"| score={hit.get('score', 0.0):.4f} | [{sections}]"
             )
         print("=" * 88)
-        print(f"Query time: {dt:.2f}s | Docs provided to LLM: {len(hits)}\n")
+        print(f"Query time: {dt:.2f}s | Recipes provided to LLM: {len(hits)}\n")
 
 
 if __name__ == "__main__":

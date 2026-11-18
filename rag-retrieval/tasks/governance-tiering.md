@@ -6,6 +6,10 @@ comment in `support/common/config.py`), but this time every recipe gets a real `
 value instead of Hybrid RAG (NER + Rerank)'s placeholder `"hot"` default, and every query is
 recorded in a governance audit trail. Governance, not relevance alone, decides which recipes live in the hot tier and which in the long-term (LT) tier.
 
+This task reuses the NER service from Baseline BM25 RAG ([Named-entity recognition in retrieval](../concepts/NER_IN_RETRIEVAL.md)). Each recipe's tier is copied onto every one of its chunks; [Chunking and governance](../concepts/CHUNKING.md#chunking-and-governance) explains why.
+
+**Hot and LT, in one paragraph.** Each recipe gets a label, `tier`. **Hot** recipes are searched first, on every question. **LT** (long-term) recipes are searched only if the hot search isn't confident, which is called escalation. The label is stored on the recipe, and both tiers sit in the same index: nothing is archived or made cheaper. Here a recipe is `hot` if it lists any allergen caution and `lt` if it lists none, because allergen information must never be on the slow path.
+
 **Not all data is equally safe to demote.** This is the mistake of tiering
 data by cost alone without checking whether some of it is safety-critical
 — plus the "why did it say that?" problem: this task adds the record
@@ -13,7 +17,7 @@ you'd need to answer that question after the fact.
 
 
 **Teaching goal:** "Tiering" (splitting data into a fast/default tier and a
-slower/archival tier) is usually framed as a pure cost/performance
+slower, lower-priority tier) is usually framed as a pure cost/performance
 optimization. This task frames it as a **governance decision instead**:
 which data is *not allowed* to be relegated to the slow/optional path, and
 how do you prove — after the fact — that a query correctly reached the data
@@ -29,7 +33,7 @@ The practical sequence is:
 | --- | --- | --- |
 | [1](#step-1-enter-the-existing-workspace) | Re-enter the workspace and open the task directory. | `Makefile` and `src/` are listed. |
 | [2](#step-2-start-the-ner-service) | Start Baseline BM25 RAG's NER service in Terminal 1. | Flask reports it is serving on `127.0.0.1:8000`. |
-| [3](#step-3-ingest-with-governance-tiers) | Re-index with `assign_tier()` and create the audit index. | The log reports `tier distribution: hot=209, lt=51`. |
+| [3](#step-3-ingest-with-governance-tiers) | Re-chunk and re-index with `assign_tier()`, and create the audit index. | The log reports `Ingested 260 recipes as 1823 chunks ... tier distribution (recipes): hot=209, lt=51`. |
 | [4](#step-4-ask-hot-tier-lt-tier-and-filtered-questions) | Ask a hot-tier, an LT-tier, and a filtered question. | `escalated=False` for the first, `escalated=True` for the other two, and `valid=True` citations. |
 | [5](#step-5-validate) | Run the smoke test with NER still running. | It prints four `[PASS] Governance Tiering ...` lines. |
 
@@ -66,7 +70,7 @@ empty cautions list -> lt | cautions key missing -> lt
 
 The two edge cases matter: a recipe whose caution data is missing is treated exactly like one with no cautions, so it lands in `lt`. The policy is only as good as the field it reads.
 
-A tier here is a label stored on each recipe, not a move to different storage. Both tiers sit in the same index, and the `tier` field decides which search path reaches a recipe first. Nothing is archived, compressed or made cheaper by being `lt`.
+A tier here is a label stored on each recipe (and copied onto every one of its chunks), not a move to different storage. Both tiers sit in the same index, and the `tier` field decides which search path reaches a recipe first. Nothing is archived, compressed or made cheaper by being `lt`.
 
 Any recipe with an allergen caution (Sulfites, Wheat, Soy, ...) is `tier=hot`
 — safety-relevant data must always be in the default, low-latency search
@@ -105,23 +109,26 @@ pipeline, adding a tiering decision before the grounding step:
      exact name/source match scores ~22–28 and a loose incidental
      word-overlap match scores ~3–9.
 3. Vector-refine (same as Hybrid RAG (NER + Rerank)) over whichever candidate set resulted,
-   restricted to those recipe IDs. One subtlety fixed during testing: kNN's
+   restricted to those recipe IDs. One subtlety: kNN's
    `include_recipe_ids` filter is a *post*-filter over OpenSearch's top-N
-   nearest neighbors, so the refine step asks for a large neighbor pool
-   (`REFINE_ANN_POOL = 300`, bigger than the whole corpus) rather than a
+   nearest neighbors, so the refine step asks for a neighbor pool as large as the
+   index (`ann_pool_for_filtered_search()`, about 1,823 chunks) rather than a
    small one — otherwise a grounding candidate with weak *vector* similarity
    to the question (exactly the failure Baseline Vector RAG demonstrated) could be
    correctly found by BM25 grounding and then silently dropped again by an
-   under-sized vector refine step. [Hybrid RAG (NER + Rerank)](hybrid-rag-ner-rerank.md#see-grounding-and-refinement-without-the-model) runs this on real data: a pool of 25 keeps 4 of the 25 grounded recipes, and 300 keeps all 25.
-4. Generate the answer with the LLM.
-5. **Write a governance audit record** to a new `recipes-audit-log` index
+   under-sized vector refine step. A fixed pool of 300 was enough when a recipe was one document; with chunks it keeps only 10 of 25 candidates. [Hybrid RAG (NER + Rerank)](hybrid-rag-ner-rerank.md#see-grounding-and-refinement-without-the-model) runs this on real data: pools of 25, 300 and 1,823 keep 4, 10 and all 25 of the 25 grounded recipes.
+4. **Pin the named source.** The question "does the X.com recipe contain sulfites?" is mostly about sulfites, and the allergen chunk of nearly every recipe matches that, so the vector step can bury the recipe the user named even though BM25 ranked it at the top. If the question names a source (`_extract_domain_tokens()`) and no refined recipe comes from it, the best *grounded* recipe from that source is added to the evidence, using its own best-matching chunks (a second kNN query restricted to that one recipe). The pin is recorded in the audit record (`pinned_named_sources`) and printed as a `PINNED:` line. It never adds a recipe that failed grounding, so `--exclude` and `--require` still hold.
+5. Generate the answer with the LLM.
+6. **Write a governance audit record** to a new `recipes-audit-log` index
    (`ensure_audit_index()` / `log_audit_event()` in
-   `support/common/opensearch_client.py`) capturing: the question, extracted
+   `support/common/opensearch_client.py`) capturing: the timestamp, the question, extracted
    entities, any `--exclude`/`--require` filters, which tier(s) were
-   searched, whether escalation happened and why, candidate/result counts,
-   the final recipe IDs/sources/cautions returned, the answer, and latency.
+   searched, whether escalation happened and why, any pinned source, candidate/result counts,
+   the final recipe IDs/sources/cautions, the evidence handles and the chunk IDs returned as evidence,
+   the handles the model cited, any cited handle that was not in the evidence, whether the citations
+   were valid, the answer, and latency.
    This is the compliance trail: you can always answer "did this query reach
-   the archive tier, and why (not)?" after the fact by querying
+   the long-term tier, and why (not)?" after the fact by querying
    `recipes-audit-log` itself.
 
 ### See the escalation decision without the model
@@ -130,6 +137,7 @@ This probe repeats the escalation decision that `ask()` makes for four questions
 
 ```bash
 python - <<'PY'
+from src.common.chunking import chunk_fetch, group_by_recipe
 from src.common.config import load_settings
 from src.common.ner_client import NERClient
 from src.common.opensearch_client import bm25_search, create_client, normalize_hits, parse_field_value_pairs
@@ -145,8 +153,9 @@ cases = [
 ]
 for question, excl in cases:
     entities = ner.extract_entities(question)
-    hot = normalize_hits(bm25_search(client, s.opensearch_recipe_bm25_index, question, k=25,
-                                     entities=entities, exclude=parse_field_value_pairs(excl), tier="hot"))
+    response = bm25_search(client, s.opensearch_recipe_bm25_index, question, k=chunk_fetch(25),
+                           entities=entities, exclude=parse_field_value_pairs(excl), tier="hot")
+    hot = group_by_recipe(normalize_hits(response), top_k=25)  # chunks in, recipes out
     top = hot[0]["score"] if hot else 0.0
     named = _extract_domain_tokens(question)
     sources = {(h.get("source") or "").lower() for h in hot}
@@ -182,7 +191,7 @@ A dish with 2.5 cups of flour.
 
 The first three decisions match the three Step 4 commands. For the thegratefulgirlcooks.com question, the best hot-tier score is not low, because the other Fish and Chips recipe has the same name, so only the missing source triggers the escalation. The fourth question shows the other side of the source detection: "2.5" is not taken for a source (`named_sources=[]`), but the question escalates anyway because the best hot-tier score is below the minimum. Source detection prevents a *false source* escalation; it does not prevent a low-confidence one. Thresholds like 15.0 are tuned to this corpus's scores, and [Task 7](operationalize-production.md) adds a check that they have not been changed without a record.
 
-Two details about the inputs. The source check uses a regular expression (`_extract_domain_tokens()`), not NER. The entities from the [NER service](../concepts/NER_IN_RETRIEVAL.md) do feed the BM25 score that is compared with the minimum, so an NER outage could move a question across the threshold; that effect was not tested here.
+Two details about the inputs. The source check uses a regular expression (`_extract_domain_tokens()`), not NER, and it compares the lowercased token with each hot-tier source as a substring, so a token such as `food.com` would also match a source named `myfood.com`. The entities from the [NER service](../concepts/NER_IN_RETRIEVAL.md) do feed the BM25 score that is compared with the minimum, so an NER outage could move a question across the threshold; that effect was not tested here.
 
 ### Output-level governance: citation-tagging
 
@@ -192,7 +201,7 @@ retrieved chunk backs *this specific sentence* in the answer?" This task
 adds that second, complementary governance signal on top of the first.
 
 Every recipe handed to the LLM is tagged with a stable handle (`[R1]`,
-`[R2]`, ...) in `_build_context()`, in the same order as `refined_hits` (and
+`[R2]`, ...) in `_build_context()`; a handle names a *recipe*, and the chunks that were shown as its evidence are recorded in the audit record's `evidence_chunk_ids`, in the same order as `refined_hits` (and
 therefore the same order as `refined_recipe_ids` in the audit record, so a
 handle can always be mapped back to a recipe ID from the audit log alone).
 `_build_system_prompt()` then makes citing those handles mandatory.
@@ -270,7 +279,7 @@ searched and why, and whether the final answer's citations were honest.
 ### Dataset
 
 Same curated 260-recipe sample as Baseline Vector RAG, Baseline BM25 RAG, Hybrid RAG (Native) and Hybrid RAG (NER + Rerank), in
-`support/recipes/recipes_sample.json`. The running "Fish and Chips" pair splits
+`support/recipes/recipes_sample.json`, with the synthetic page text and chunks described in [Baseline Vector RAG](baseline-vector-rag.md#why-this-lab-chunks). The running "Fish and Chips" pair splits
 across tiers by design:
 
 | | Source | Cautions | Tier |
@@ -306,7 +315,7 @@ Terminal 1 (a new terminal opened in the lab root; NER service, stays running):
 
 ```bash
 source .venv/bin/activate
-cd scripts/baseline-bm25-rag
+cd scripts/governance-tiering
 python -m src.ner_service
 ```
 
@@ -320,7 +329,7 @@ Terminal 2:
 python -m src.ingest
 ```
 
-**Expected:** a log line `Ingested 260 recipes into 'recipes-bm25' and 'recipes-vector' -- tier distribution: hot=209, lt=51`. Hybrid RAG (NER + Rerank)'s ingest writes the same two indexes with a placeholder tier, so if you rerun that ingest later, rerun this one before querying again.
+**Expected:** a log line `Ingested 260 recipes as 1823 chunks into 'recipes-bm25' and 'recipes-vector' -- tier distribution (recipes): hot=209, lt=51`. The counts are recipes: every chunk of a recipe gets its recipe's tier. If either index has the older one-document-per-recipe layout, ingest logs a `WARNING`, deletes it and creates it again for chunks. Add `--recreate` to rebuild indexes that already hold chunks. Hybrid RAG (NER + Rerank)'s ingest writes the same two indexes with a placeholder tier, so if you rerun that ingest later, rerun this one before querying again.
 
 ## Step 4: ask hot-tier, LT-tier, and filtered questions
 
@@ -335,50 +344,55 @@ python -m src.query --question "Does the thegratefulgirlcooks.com Fish and Chips
 python -m src.query --question "Suggest a British fish and chips recipe." --exclude allergen=Sulfites
 ```
 
-**Expected:** each command prints a `GOVERNANCE:` line, a `CITATIONS:` line, the `ANSWER:`, and the `REFINED` hits. Scores, such as `hot_top_score`, and the answer wording drift between runs; the properties to check are `escalated`, `reason`, `cited`, and `valid`. Sample output for each command follows.
+**Expected:** each command prints a `GOVERNANCE:` line, a `CITATIONS:` line, the `ANSWER:`, and the `REFINED` recipes (with the sections of their matching chunks in brackets). The LT-tier question also prints a `PINNED:` line. Scores, such as `hot_top_score`, and the answer wording drift between runs; the properties to check are `escalated`, `reason`, `cited`, and `valid`. Sample output for each command follows.
 
 **Hot-tier recipe** (womensweeklyfood.com.au, has a Sulfites caution): `escalated=False` and `valid=True`. It resolves without ever touching the LT tier, and the answer cites exactly the retrieved recipe that backs it (`[R1]`), with no hallucinated tags:
 
 ```text
-GOVERNANCE: tiers_searched=['hot'] escalated=False reason=None hot_hits=25 hot_top_score=22.4589
+GOVERNANCE: tiers_searched=['hot'] escalated=False reason=None hot_hits=25 hot_top_score=22.7312
 CITATIONS: evidence=['R1', 'R2', 'R3', 'R4', 'R5'] cited=['R1'] hallucinated=[] valid=True
 ANSWER: Yes, the womensweeklyfood.com.au Fish and Chips recipe contains sulfites. [R1] The
 recipe is marked with a sulfites caution in its allergen information. [R1]
 
-REFINED (vector rerank, top 5):
-  - [R1] Fish and chips | source=womensweeklyfood.com.au | tier=hot | cautions=['Sulfites'] | score=0.8318
-  - [R2] End-of-the-Rainbow Cookies | source=Martha Stewart | tier=hot | cautions=['Soy', 'Sulfites'] | score=0.7621
+REFINED (vector rerank, top 5 recipes; matching chunks in brackets):
+  - [R1] Fish and chips | source=womensweeklyfood.com.au | tier=hot | cautions=['Sulfites'] | score=0.8227 | [Ingredients, Allergen cautions and labels, Method steps 7-8]
+  - [R2] Chocolate Stout Whoopie Pies | source=The Daily Meal | tier=hot | cautions=['Sulfites'] | score=0.7682 | [Ingredients, Allergen cautions and labels]
   ...
 ```
 
-**LT-tier recipe** (thegratefulgirlcooks.com, no cautions): `escalated=True`, `reason=named_source_not_in_hot_tier`, `cited=['R4']`, and `valid=True`. The hot-only
+**LT-tier recipe** (thegratefulgirlcooks.com, no cautions): `escalated=True`, `reason=named_source_not_in_hot_tier`, `cited=['R6']`, and `valid=True`. The hot-only
 grounding search's top hit is the *other* Fish and Chips recipe (score
-22.46, since the recipe *name* matches regardless of source). The question
+28.73: the recipe *name* matches regardless of source, and the question's
+`fish and chips` entity from NER matches the recipe name that ingest folded
+into that recipe's entities, which adds 6.0). The question
 names a source domain (found by `_extract_domain_tokens()`, which accepts only domain-like tokens such as `name.com` or `name.com.au`), and that source
-isn't among the hot-tier results, so the system escalates and finds the
-correct recipe in the LT tier at a *higher* score (28.46). That extra 6.0 is
-the entity boost for `chips`, which only that recipe's indexed entities
-contain; it is not a source-name match, and it is not why the system
-escalated. The final answer correctly cites `[R4]` — the
-handle assigned to the *escalated*, LT-tier recipe — not `[R1]`, the
-hot-tier recipe that merely shares a name:
+isn't among the hot-tier results, so the system escalates. The correct
+recipe in the LT tier scores the same 28.73, because the same entity matches
+its name too. Neither the score nor the entity boost is why the system
+escalated: the named source was missing from the hot tier.
+
+The vector step then leaves that recipe outside its top 5, because the question is mostly "contain sulfites?", which matches the allergen chunk of nearly every recipe (the same effect as in [Baseline Vector RAG](baseline-vector-rag.md#see-the-miss-without-the-model)). The recipe the user named would have been missing from the evidence, so the named-source rule **pins** it: the `PINNED:` line reports that its best chunks were added after the vector refine. It is added last, which is why it is `[R6]` and the answer cites `[R6]` — the handle assigned to the *escalated*, LT-tier recipe — not `[R1]`, the hot-tier recipe that merely shares a name:
 
 ```text
-GOVERNANCE: tiers_searched=['hot', 'lt'] escalated=True reason=named_source_not_in_hot_tier hot_hits=25 hot_top_score=22.4589
-CITATIONS: evidence=['R1', 'R2', 'R3', 'R4', 'R5'] cited=['R4'] hallucinated=[] valid=True
-ANSWER: No, the thegratefulgirlcooks.com Fish and Chips recipe does not contain sulfites. [R4]
-The recipe lists "none listed" for allergen cautions, and sulfites are not mentioned among
-the ingredients or health warnings.
+GOVERNANCE: tiers_searched=['hot', 'lt'] escalated=True reason=named_source_not_in_hot_tier hot_hits=25 hot_top_score=28.7312
+PINNED: named source(s) ['thegratefulgirlcooks.com'] added to the evidence after the vector refine
+CITATIONS: evidence=['R1', 'R2', 'R3', 'R4', 'R5', 'R6'] cited=['R6'] hallucinated=[] valid=True
+ANSWER: Based on the context provided, the thegratefulgirlcooks.com Fish and Chips recipe does not
+list sulfites as an allergen caution. [R6] The allergen cautions for this recipe are listed as
+"none listed."
 
-REFINED (vector rerank, top 5):
-  - [R1] Fish and chips | source=womensweeklyfood.com.au | tier=hot | cautions=['Sulfites'] | score=0.8265
-  - [R2] End-of-the-Rainbow Cookies | source=Martha Stewart | tier=hot | cautions=['Soy', 'Sulfites'] | score=0.7671
-  - [R3] Chorizo And Shrimp Rice Recipe | source=Food Republic | tier=hot | cautions=['Sulfites'] | score=0.7645
-  - [R4] Fish and Chips | source=thegratefulgirlcooks.com | tier=lt | cautions=[] | score=0.7597
-  - [R5] Harry Potter's Pumpkin Juice - the Healthy Halloween Treat | source=kidsactivitiesblog.com | tier=hot | cautions=['Sulfites'] | score=0.7565
+REFINED (vector rerank, top 6 recipes; matching chunks in brackets):
+  - [R1] Fish and chips | source=womensweeklyfood.com.au | tier=hot | cautions=['Sulfites'] | score=0.8134 | [Ingredients, Allergen cautions and labels, Method steps 7-8]
+  - [R2] Chorizo And Shrimp Rice Recipe | source=Food Republic | tier=hot | cautions=['Sulfites'] | score=0.7646 | [Ingredients, Allergen cautions and labels]
+  - [R3] Slow-Cooker Chicken Mole | source=Delish | tier=hot | cautions=['Sulfites'] | score=0.7643 | [Allergen cautions and labels]
+  - [R4] The Best Homemade BBQ Sauce | source=everydaypartymag.com | tier=hot | cautions=['Sulfites'] | score=0.7621 | [Allergen cautions and labels]
+  - [R5] Tamale Filling Recipe | source=Group Recipes | tier=hot | cautions=['Sulfites'] | score=0.7604 | [Allergen cautions and labels]
+  - [R6] Fish and Chips | source=thegratefulgirlcooks.com | tier=lt | cautions=[] | score=0.7471 | [Ingredients, Allergen cautions and labels, Method step 7]
 ```
 
-**Combined with a hard filter**: `--exclude allergen=Sulfites` on a generic
+The pin follows from one fact: BM25 grounding put the named recipe at the top (tied with the other Fish and Chips recipe), and the rule trusts that. Without the pin, the evidence for this question would be the sulfite chunks of five other recipes and nothing from the recipe the user asked about.
+
+**Combined with a hard filter**: `--exclude` and `--require` work as in Hybrid RAG (NER + Rerank), including its caveat that an unrecognised filter name (for example the typo `alergen`) is used as written and matches no field, so an `--exclude` on it silently removes nothing. `--exclude allergen=Sulfites` on a generic
 "suggest a fish and chips recipe" question removes the hot-tier recipe from
 the candidate pool entirely, which *also* triggers escalation (this time via
 the generic low-confidence-score path, since the remaining hot-tier
@@ -386,15 +400,16 @@ candidates are all weak matches), and the answer recommends the Fish and Chips r
 
 ```text
 python -m src.query --question "Suggest a British fish and chips recipe." --exclude allergen=Sulfites
-GOVERNANCE: tiers_searched=['hot', 'lt'] escalated=True reason=low_confidence_hot_score hot_hits=8 hot_top_score=6.9424
-ANSWER: I can suggest the Fish and Chips recipe from thegratefulgirlcooks.com...
+GOVERNANCE: tiers_searched=['hot', 'lt'] escalated=True reason=low_confidence_hot_score hot_hits=8 hot_top_score=6.9581
+CITATIONS: evidence=['R1', 'R2', 'R3', 'R4', 'R5'] cited=['R1'] hallucinated=[] valid=True
+ANSWER: I can suggest the **Fish and Chips recipe from thegratefulgirlcooks.com** [R1]...
 ```
 
 Every call also writes one document to `recipes-audit-log`. Each record captures the
 question, entities, filters, `tiers_searched`, `escalated`/`escalation_reason`,
-the refined recipe IDs/sources/cautions, `evidence_handles`/`cited_handles`/
+the refined recipe IDs/sources/cautions, the `evidence_chunk_ids` behind them, any `pinned_named_sources`, `evidence_handles`/`cited_handles`/
 `hallucinated_citations`/`citations_valid`, the answer, and latency, so you
-can answer both "did this query reach the archive tier, and why (not)?" and
+can answer both "did this query reach the long-term tier, and why (not)?" and
 "did the answer's citations actually match what was retrieved?" for any past
 question without re-running anything. Operationalize Production reads these records back.
 
@@ -426,15 +441,15 @@ python -m src.validate
 ```text
 [PASS] Governance Tiering citation extraction and hallucination detection work as expected
 [PASS] Governance Tiering source detection ignores numbers and abbreviations
-[PASS] Governance Tiering answered the hot-tier recipe without escalating: meta={'tiers_searched': ['hot'], 'escalated': False, 'escalation_reason': None, 'hot_hit_count': 25, 'hot_top_score': 22.458874, 'evidence_handles': ['R1', 'R2', 'R3', 'R4', 'R5'], 'cited_handles': ['R1'], 'hallucinated_citations': [], 'citations_valid': True}
-[PASS] Governance Tiering escalated to the LT tier and found the correct recipe: meta={'tiers_searched': ['hot', 'lt'], 'escalated': True, 'escalation_reason': 'named_source_not_in_hot_tier', 'hot_hit_count': 25, 'hot_top_score': 22.458874, 'evidence_handles': ['R1', 'R2', 'R3', 'R4', 'R5'], 'cited_handles': ['R4'], 'hallucinated_citations': [], 'citations_valid': True}
+[PASS] Governance Tiering answered the hot-tier recipe without escalating: meta={'tiers_searched': ['hot'], 'escalated': False, 'escalation_reason': None, 'hot_hit_count': 25, 'hot_top_score': 22.731224, 'evidence_handles': ['R1', 'R2', 'R3', 'R4', 'R5'], 'evidence_chunk_ids': ['a9d7ddb702fa-00', 'a9d7ddb702fa-01', 'a9d7ddb702fa-05', 'af8092753b21-00', 'af8092753b21-01', '1a538998cf8c-01', '17516aacf32f-01', 'e12eb6111f1e-01'], 'pinned_named_sources': [], 'cited_handles': ['R1'], 'hallucinated_citations': [], 'citations_valid': True}
+[PASS] Governance Tiering escalated to the LT tier and found the correct recipe: meta={'tiers_searched': ['hot', 'lt'], 'escalated': True, 'escalation_reason': 'named_source_not_in_hot_tier', 'hot_hit_count': 25, 'hot_top_score': 28.731224, 'evidence_handles': ['R1', 'R2', 'R3', 'R4', 'R5', 'R6'], 'evidence_chunk_ids': ['a9d7ddb702fa-00', 'a9d7ddb702fa-01', 'a9d7ddb702fa-05', '7e8a943b5c0d-00', '7e8a943b5c0d-01', '64671cf8a9e6-01', '3c5eef70c11e-01', 'e12eb6111f1e-01', '9ccd03de3c8a-00', '9ccd03de3c8a-01', '9ccd03de3c8a-05'], 'pinned_named_sources': ['thegratefulgirlcooks.com'], 'cited_handles': ['R6'], 'hallucinated_citations': [], 'citations_valid': True}
 ```
 
 ## Completion checkpoint
 
-You have completed Governance Tiering when ingest reported `hot=209, lt=51`, the hot-tier question resolved with `escalated=False`, the LT-tier question escalated with `reason=named_source_not_in_hot_tier` and cited the LT-tier recipe, every `CITATIONS:` line showed `valid=True`, and all four smoke-test checks passed. Those queries also gave `recipes-audit-log` the records Operationalize Production monitors. The lesson to carry forward: a tiering rule is a governance decision, and the audit record is what lets you prove it was followed.
+You have completed Governance Tiering when ingest reported `hot=209, lt=51` over 1823 chunks, the hot-tier question resolved with `escalated=False`, the LT-tier question escalated with `reason=named_source_not_in_hot_tier`, pinned the named recipe and cited it, every `CITATIONS:` line showed `valid=True`, and all four smoke-test checks passed. Those queries also gave `recipes-audit-log` the records Operationalize Production monitors. The lesson to carry forward: a tiering rule is a governance decision, and the audit record is what lets you prove it was followed.
 
-For how this step fits with the other approaches, and what each one adds and cannot do, see [Choosing a retrieval approach](../concepts/CHOOSING_RETRIEVAL.md). For what the NER step contributes and where it silently does nothing, see [Named-entity recognition in retrieval](../concepts/NER_IN_RETRIEVAL.md). If you add chunking to this lab, the citation handles and the audit record would need redesigning; see [Chunking and governance](../concepts/CHUNKING.md#chunking-and-governance).
+For how this step fits with the other approaches, and what each one adds and cannot do, see [Choosing a retrieval approach](../concepts/CHOOSING_RETRIEVAL.md). For what the NER step contributes and where it silently does nothing, see [Named-entity recognition in retrieval](../concepts/NER_IN_RETRIEVAL.md). For how chunks, citation handles and the audit record fit together, see [Chunking and governance](../concepts/CHUNKING.md#chunking-and-governance).
 
 The [Governance Tiering source map](../references/governance-tiering.md#source-map) lists every file used here. Setup or runtime issue? See [Governance Tiering troubleshooting](../troubleshooting/governance-tiering.md)
 for common fixes -- including what to check if `ner_service.py` isn't
