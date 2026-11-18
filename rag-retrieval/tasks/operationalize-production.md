@@ -1,7 +1,7 @@
 # Task 7: Operationalize Production
 
 Unlike Baseline Vector RAG through Governance Tiering, this task is **not new RAG retrieval code**. The
-underlying infrastructure (Instaclustr OpenSearch + AWS Bedrock) was adopted
+underlying infrastructure (Instaclustr OpenSearch + the selected LLM provider) was adopted
 all the way back in Baseline Vector RAG; this task is an **operational hardening
 pass** over everything already built, expanded to cover the governance
 artifacts [Governance Tiering](governance-tiering.md) introduced
@@ -25,7 +25,7 @@ over-privileged. This task draws an explicit line between:
 - **What this task automates** — code you can actually run, with a
   `validate.py` smoke test, like every other task.
 - **What stays a manual/infra checklist** — things that require
-  cluster-admin or AWS-console access this codebase's app credentials
+  cluster-admin or provider-account access this codebase's app credentials
   intentionally don't hold, and so can only ever be a documented,
   reviewable checklist item, not a script.
 
@@ -52,13 +52,14 @@ The practical sequence is:
 
 These are manual items; nothing here is automated by
 this task's code because they require access beyond the app's own
-OPENSEARCH_USER/PASSWORD and AWS credentials in `.env`.
+OpenSearch credentials and the selected LLM provider's credentials.
 
-- **Scope IAM to the specific Bedrock model ARN(s) actually in use**, not a
-  broad `bedrock:InvokeModel` grant over `*`. See
+- **Scope and rotate API keys** for OpenAI-compatible or direct Anthropic use.
+  For Bedrock, **scope IAM to the model/inference-profile resources in use**,
+  rather than a broad `bedrock:InvokeModel` grant over `*`. See
   [`src/hardening/bedrock_invoke_policy.json`](../scripts/operationalize-production/src/hardening/bedrock_invoke_policy.json)
-  for the exact policy shape to attach (fill in your `.env`'s `AWS_REGION`
-  / `BEDROCK_MODEL_ID`).
+  for an illustrative policy to adapt to your `AWS_REGION`,
+  `BEDROCK_MODEL_ID`, and invocation resources.
 - **Role-based OpenSearch security** instead of one shared cluster
   credential. See [`src/hardening/opensearch_roles.json`](../scripts/operationalize-production/src/hardening/opensearch_roles.json)
   for four illustrative roles (`recipe_writer`, `recipe_reader`,
@@ -70,7 +71,7 @@ OPENSEARCH_USER/PASSWORD and AWS credentials in `.env`.
   credentials can check).
 - **Per-tenant index isolation** — not yet applicable; this project is
   single-tenant today. Revisit if/when that changes.
-- **Secrets handling** — move `.env`'s plaintext Instaclustr/AWS
+- **Secrets handling** — move `.env`'s plaintext Instaclustr and provider
   credentials to a real secrets manager (e.g. AWS Secrets Manager or SSM
   Parameter Store), loaded at process start instead of kept in a local
   file. Not wired up here since it requires provisioning AWS resources this
@@ -133,10 +134,10 @@ half of this control.
 - **Latency**: already captured per-query as `latency_ms` in
   `recipes-audit-log` (Governance Tiering) — build any latency alarm from that raw
   signal rather than re-instrumenting.
-- **Error rates / cost**: Bedrock invoke errors and spend are visible in
-  AWS CloudWatch's `bedrock-runtime` metrics; wire a CloudWatch alarm
-  against your account, not something this repo's app credentials can set
-  up on their own.
+- **Error rates / cost**: configure usage, spending, and failure alerts for
+  the selected provider. Use AWS controls for Bedrock or the API provider's
+  account controls for OpenAI-compatible/direct Anthropic calls; these
+  account-level changes are not performed by this task.
 
 ## Before you begin
 

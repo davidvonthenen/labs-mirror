@@ -244,6 +244,6 @@ For when keyword matching beats vector search and when it does not, see [BM25 ve
 for common fixes -- including what to check if `ner_service.py` isn't
 running (entity matching silently degrades to plain full-text matching
 rather than erroring), missing `.env` values, certificate errors, and
-Bedrock model access.
+LLM-provider model access.
 
 Continue to [Task 4: Hybrid RAG (Native)](hybrid-rag-native.md), or return to the [task index](../README.md#tasks).

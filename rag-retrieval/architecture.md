@@ -3,8 +3,8 @@
 ## 1. Purpose and how to use this reference
 
 This describes the pieces every task shares (`support/common/`), how they connect
-to the two pieces of real infrastructure (Instaclustr OpenSearch, AWS
-Bedrock), the index-naming scheme that lets every task share one
+to the two remote services (Instaclustr OpenSearch and the selected LLM
+provider), the index-naming scheme that lets every task share one
 cluster without colliding, and the contracts and known limits of each task's
 retrieval design. For what each *task* does step by step, see the
 [top-level README](README.md)'s task table and the matching
@@ -29,12 +29,12 @@ images/                               Overview + per-task architecture diagrams
 architecture.md                       This page: contracts, interfaces, per-task limits, verification
 scripts/                              One directory per task (see below)
 support/
-  common/                             Shared config, LLM (Bedrock/OpenAI)/OpenSearch/NER clients, embeddings, logging
+  common/                             Shared config, LLM (OpenAI/Anthropic/Bedrock)/OpenSearch/NER clients, embeddings, logging
   requirements.txt                    Single shared dependency set for every task
   .env.example                        Every task's configuration, in one place
   recipes/recipes_sample.json         The curated 260-recipe sample every ingest script reads
   recipes/recipes_synthetic.json      Synthetic introduction, method and notes for each recipe (chunked with the sample)
-  generate_synthetic_recipes.py       Regenerates that synthetic text with Bedrock (optional; not needed to run a task)
+  generate_synthetic_recipes.py       Regenerates synthetic text with the selected LLM provider (optional)
   validate_setup.py                   Workspace check run in Task 1
 ```
 
@@ -56,9 +56,9 @@ Inside each `src/` are `ingest.py`, `query.py` (plus `ner_service.py` for Baseli
 | Concern | Architectural rule |
 |---|---|
 | Shared plumbing | Every task imports connection, configuration, model, and logging code from `support/common/` through its `src/common` link. Tasks define retrieval logic only. |
-| Configuration | One `.env`, created from `support/.env.example`, is loaded by `load_settings()`. `require_configured()` stops a task before it connects if required values are missing. Details and precedence: [section 6](#6-configuration-and-deployment-boundaries). |
+| Configuration | Inherited settings and an optional `.env`, created from `support/.env.example`, are loaded by `load_settings()`. `require_configured()` stops a task before it connects if required values are missing. Details and precedence: [section 6](#6-configuration-and-deployment-boundaries). |
 | Isolation between tasks | Tasks share one OpenSearch cluster but write to separate indexes (see [Index naming](#7-index-naming-one-cluster-many-indexes)). Hybrid RAG (NER + Rerank) and Governance Tiering deliberately share `recipes-bm25` / `recipes-vector`. |
-| LLM access | Tasks call only `generate()`. The provider (`bedrock` or `openai`) is selected by `LLM_PROVIDER`; no task depends on either provider's wire format. |
+| LLM access | Tasks call only `generate()`. `LLM_PROVIDER` selects `openai` (default), `anthropic`, or `bedrock`; retrieval task modules do not depend on provider wire formats. |
 | NER | Baseline BM25 RAG, Hybrid RAG (NER + Rerank) and Governance Tiering call the local `ner_service.py` through `NERClient`. |
 | Hard constraints | From Hybrid RAG (NER + Rerank), `--exclude` / `--require` become OpenSearch `must_not` / `filter` clauses, which are boolean and not scored. |
 | Governance record | From Governance Tiering, every query writes one document to `recipes-audit-log` through `log_audit_event()`. |
@@ -78,7 +78,7 @@ Inside each `src/` are `ingest.py`, `query.py` (plus `ner_service.py` for Baseli
 | LLM call | The exception propagates and the task stops. In Governance Tiering the audit record is written after generation, so a failed LLM call leaves no audit record. | `llm_client.py`, `governance-tiering/src/query.py` |
 | Missing configuration | `require_configured()` raises one `RuntimeError` listing every missing value. | `config.py` |
 
-The components this lab was run with (Bedrock Claude Haiku 4.5, which you choose through `BEDROCK_MODEL_ID`, plus `all-MiniLM-L6-v2`, spaCy `en_core_web_sm` and OpenSearch 3.6.0) are what was tested, not proof that other choices behave the same way. The thresholds and score examples were measured on this 260-recipe sample and are not validated on other data. Everything in this table is an application-level control inside one process; none of it is a security boundary (for access control, see the illustrative policies under Operationalize Production's `hardening/`).
+The original workshop examples were recorded with Bedrock Claude Haiku 4.5, `all-MiniLM-L6-v2`, spaCy `en_core_web_sm`, and OpenSearch 3.6.0. They establish the provenance of the teaching examples, not live validation of the provider adapters in this revision; see [VALIDATION_REPORT.md](VALIDATION_REPORT.md) for current checks. The thresholds and score examples were measured on the 260-recipe sample and are not validated on other data. Everything in this table is an application-level control inside one process; none of it is a security boundary (for access control, see the illustrative policies under Operationalize Production's `hardening/`).
 
 ### Runtime topology
 
@@ -88,7 +88,7 @@ scripts/<task-id>/  (python -m src.ingest | src.query | src.validate)
        -> Instaclustr OpenSearch (HTTPS, basic auth from .env)
             recipes-vector-baseline | recipes-bm25-baseline | recipes-hybrid
             recipes-bm25 + recipes-vector | recipes-audit-log
-       -> LLM: Amazon Bedrock (boto3) or OpenAI-compatible /chat/completions
+       -> LLM: OpenAI-compatible (default), Anthropic API, or Claude on Bedrock
        -> local embeddings: sentence-transformers/all-MiniLM-L6-v2
        -> NER: scripts/baseline-bm25-rag/src/ner_service.py
             POST /ner on 127.0.0.1:8000 (Baseline BM25 RAG, Hybrid RAG (NER + Rerank) and Governance Tiering; probed by Operationalize Production)
@@ -114,7 +114,7 @@ If you are changing behavior rather than a whole task, start from the intent:
 
 | Change intent | Start here | Key symbols |
 |---|---|---|
-| Change the LLM provider or model call | [`llm_client.py`](support/common/llm_client.py) | `generate`, `_generate_bedrock`, `_generate_openai` |
+| Change the LLM provider or model call | [`llm_client.py`](support/common/llm_client.py) | `generate` and its provider adapters |
 | Change index mappings or query builders | [`opensearch_client.py`](support/common/opensearch_client.py) | `create_client`, `ensure_recipe_*_index`, `build_recipe_bm25_query`, `build_recipe_vector_query`, `normalize_hits` |
 | Change what is ingested or embedded, or how recipes are chunked | [`chunking.py`](support/common/chunking.py) and `main()` in each task's `ingest.py`; [`embeddings.py`](support/common/embeddings.py) | `chunk_recipe`, `load_recipes`, `STEPS_PER_CHUNK`, `EmbeddingModel`, `RECIPES_SAMPLE_PATH`, `RECIPES_SYNTHETIC_PATH` |
 | Add or change `--exclude` / `--require` fields | [`opensearch_client.py`](support/common/opensearch_client.py) | `FILTERABLE_FIELDS`, `parse_field_value_pairs`, `normalize_values` in [`labels.py`](support/common/labels.py) |
@@ -140,9 +140,11 @@ These are the contracts at each point where one component hands data to another.
 
 Every task's `src.validate` takes no arguments and exits non-zero if a check fails. A task's `Makefile` wraps these (`install`, `ingest`, `query QUESTION=... ARGS=...`, `validate`, `clean`; Task 3 adds `ner`; Task 7 has `monitor` and `policy` instead of `ingest`/`query`).
 
-**Task to OpenSearch.** Created once through `create_client()`: HTTPS, basic auth, with the host and credentials from `.env`. Documents are keyed by `chunk_id` (the recipe ID plus the chunk position), so re-ingesting overwrites each chunk rather than duplicating it. BM25 and kNN searches use a 30-second request timeout. Tasks 2, 3, 5 and 6 turn a response into a list of plain dicts with `normalize_hits()`: a `score` key, an `id`, and the stored fields at the top level. Task 4 does not; `hybrid_search()` returns the raw response, and its `query.py` and `validate.py` read `hits.hits[]` with `_score` and the fields under `_source`.
+**Task to OpenSearch.** Created once through `create_client()`: HTTPS, basic auth, with the configured host and credentials. Documents are keyed by `chunk_id` (the recipe ID plus the chunk position), so re-ingesting overwrites matching chunks rather than duplicating them; obsolete chunks remain unless explicitly rebuilt. BM25 and kNN searches use a 30-second request timeout. All five retrieval tasks normalize chunk responses with `normalize_hits()` and group them into parent recipes with `group_by_recipe()`. Returned parent hits carry `score`, source metadata, selected `chunks`, `matched_chunks`, and combined evidence `text`.
 
-**Task to LLM.** `generate(prompt, system=..., max_tokens=..., temperature=...)` returns one string. Bedrock sends an Anthropic Messages body, so the Bedrock path works for Anthropic Claude model IDs; the OpenAI path calls `{OPENAI_BASE_URL}/chat/completions` through the official `openai` SDK with a 60-second timeout and no automatic retries. Defaults are `BEDROCK_MAX_TOKENS=1024` and `BEDROCK_TEMPERATURE=0.2`. No explicit timeout is set for the Bedrock call. Tasks 2, 4, 5 and 6 send a `Question:` block followed by a `Context:` block built from the retrieved hits, with at most 1,800 characters of each recipe's evidence (its best-matching chunks); Task 3 sends `Context:` first, then the question, caps each recipe at the same 1,800 characters, and uses its own shorter system prompt ("Answer using ONLY the provided context…"). Only Task 6 wraps each hit in an `[R#]` handle.
+**Task to LLM.** `generate(prompt, system=..., max_tokens=..., temperature=...)` returns one string. The default OpenAI adapter uses `openai.OpenAI` and `{OPENAI_BASE_URL}/chat/completions`. Direct Anthropic uses `anthropic.Anthropic`; Claude on Bedrock uses `anthropic.AnthropicBedrock` with AWS authentication. Both Anthropic adapters call `messages.create()` with a user message and a top-level `system` value when supplied, and return concatenated text blocks; a response without text raises an error. Every provider uses a 60-second timeout and disables SDK retries.
+
+The existing `BEDROCK_MAX_TOKENS` name is retained as the shared generation budget, default `1024`; OpenAI receives `max_completion_tokens`, and the Anthropic clients receive `max_tokens`. `BEDROCK_TEMPERATURE` is optional: unset or blank omits the parameter. An explicit numeric value is sent as OpenAI `temperature` or Anthropic `extra_body.temperature` for a model that supports it. No new CLI flag is involved. Tasks 2, 4, 5 and 6 send a `Question:` block followed by a `Context:` block built from the retrieved hits, with at most 1,800 characters of each recipe's evidence (its best-matching chunks); Task 3 sends `Context:` first, then the question, caps each recipe at the same 1,800 characters, and uses its own shorter system prompt ("Answer using ONLY the provided context…"). Only Task 6 wraps each hit in an `[R#]` handle.
 
 **Task to NER service.** `POST http://127.0.0.1:8000/ner` with `{"text": "...", "labels": [...]}` (labels optional). The reply is `{"entities": [...], "entity_pairs": [...]}`; a malformed request gets HTTP 400. The service keeps entities of type PERSON, ORG, PRODUCT, GPE, EVENT, WORK_OF_ART, NORP, LOC and FAC of at least three characters, lowercased and de-duplicated. `NERClient` has a 5-second timeout (`NER_TIMEOUT_SECS`). `extract_entities()` hides failures by returning `[]`; `is_available()` is the check that does not, and is what the smoke tests and setup check use. What the entities do to ranking, and where they silently do nothing, is on [Named-entity recognition in retrieval](concepts/NER_IN_RETRIEVAL.md).
 
@@ -159,9 +161,9 @@ query, not the underlying plumbing. That is intentional: the point of this lab i
 
 | Module | Responsibility |
 |---|---|
-| `support/common/config.py` | Loads every setting from one `.env` into a single `Settings` dataclass. `require_configured()` fails fast with one actionable message instead of a raw connection traceback if `.env` is missing real values. Also defines `RECIPES_SAMPLE_PATH`. |
+| `support/common/config.py` | Loads inherited environment values and an optional `.env` into a single `Settings` dataclass. `require_configured()` fails fast with one actionable message if required values are missing. Also defines the shared recipe paths. |
 | `support/common/opensearch_client.py` | `create_client()` (the one OpenSearch client factory every task uses) + every index-mapping/query-builder function, organized by task in comment-delimited sections. This is the largest shared module and the one most tasks extend. It still holds four older helpers (`ensure_vector_index`, `knn_search`, `ensure_bm25_index`, `bm25_entity_query`) that no task calls; they are kept as legacy code. |
-| `support/common/llm_client.py` | `generate()` — the one function every task calls to get a completion. Dispatches to Amazon Bedrock or an OpenAI-compatible endpoint based on `LLM_PROVIDER` in `.env`. |
+| `support/common/llm_client.py` | `generate()` — the function every task calls to get a completion. Dispatches to OpenAI-compatible generation (default), the Anthropic API, or Claude on Amazon Bedrock according to `LLM_PROVIDER`. |
 | `support/common/chunking.py` | `chunk_recipe()` splits a recipe into section chunks (each starting with the recipe name and source), `load_recipes()` merges in the synthetic text, `group_by_recipe()` folds ranked chunk hits back into recipes, and `chunk_fetch()` sizes a chunk search. See [Chunking](concepts/CHUNKING.md). |
 | `support/common/embeddings.py` | `EmbeddingModel` — wraps `sentence-transformers`, cached per process. `encode()` returns L2-normalized vectors; `dimension` is read from the loaded model. See [Embedding models](concepts/EMBEDDING_MODELS.md). |
 | `support/common/ner_client.py` | `NERClient` — calls the local `ner_service.py` Flask service and normalizes results; network/service failures degrade to an empty entity list rather than raising, so a flaky NER call never takes down ingest or query. See [Named-entity recognition in retrieval](concepts/NER_IN_RETRIEVAL.md#failure-and-monitoring). |
@@ -173,7 +175,7 @@ query, not the underlying plumbing. That is intentional: the point of this lab i
 
 ## 6. Configuration and deployment boundaries
 
-There is exactly one `.env` (copied from `support/.env.example`), loaded once per process by `support/common/config.py`'s `load_settings()`. Every task reads
+The optional lab-root `.env` (copied from `support/.env.example`) is loaded once per process by `support/common/config.py`'s `load_settings()`. Every task reads
 from the same `Settings` dataclass; what differs per task is *which*
 fields it actually uses (e.g. only Governance Tiering and Operationalize Production read
 `TIER_MIN_HOT_SCORE`/`TIER_MIN_HOT_CANDIDATES`). This is why adding a new
@@ -196,9 +198,10 @@ system.
 | `TIER_MIN_HOT_SCORE` / `TIER_MIN_HOT_CANDIDATES` | `15.0` / `3` | Governance Tiering's escalation thresholds, tuned on this sample. |
 | `AUDIT_RETENTION_DAYS`, `GOVERNANCE_ALERT_LOOKBACK_HOURS`, `GOVERNANCE_MAX_ESCALATION_RATE` | `180`, `24`, `0.5` | Operationalize Production. |
 | `NER_SERVICE_URL`, `NER_TIMEOUT_SECS` | `http://127.0.0.1:8000/ner`, `5` | The NER service is local only. |
-| `LLM_PROVIDER` | `bedrock` | `openai` selects an OpenAI-compatible endpoint. Only the Bedrock path was exercised in the live runs; the OpenAI path is untested. |
+| `LLM_PROVIDER` | `openai` | Accepted values: `openai`, `anthropic`, `bedrock`. Each uses its matching credential/model settings; see [the environment reference](references/setup-environment.md). |
+| `BEDROCK_MAX_TOKENS` / `BEDROCK_TEMPERATURE` | `1024` / unset | Existing names retained across all providers. Unset/blank temperature is omitted; set it only for a model that accepts temperature. |
 
-**Deployment boundaries.** The OpenSearch cluster and the LLM are remote and need credentials; embeddings and the NER service run on the local machine. The NER service is a development server started by hand (`make ner`, or `python -m src.ner_service`) and listens on `127.0.0.1` only; nothing in the lab starts or supervises it. The cluster is typically shared, so a task that writes indexes can be pointed at disposable names by setting the `OPENSEARCH_*_INDEX` variables in the shell. Tasks 4 and 7 also create cluster-wide objects with fixed names: the search pipeline `hybrid-search-pipeline` and the ISM policy `recipes-audit-log-retention`. Running the lab on a shared cluster therefore changes those objects for everyone using it. Credentials belong in `.env`, which must not be committed or shared.
+**Deployment boundaries.** The OpenSearch cluster and the LLM are remote and need credentials; embeddings and the NER service run on the local machine. The NER service is a development server listening on `127.0.0.1`; the manual path starts it with `make ner` or `python -m src.ner_service` from Baseline BM25 RAG, while the existing `insta` lifecycle manages its declared process. The cluster is typically shared, so a task that writes indexes can be pointed at disposable names by setting the `OPENSEARCH_*_INDEX` variables in the shell. Tasks 4 and 7 also create cluster-wide objects with fixed names: the search pipeline `hybrid-search-pipeline` and the ISM policy `recipes-audit-log-retention`. Running the lab on a shared cluster therefore changes those objects for everyone using it. Credentials belong in the configured environment or private `.env`, which must not be committed or shared.
 
 ## 7. Index naming: one cluster, many indexes
 
@@ -222,7 +225,7 @@ history of the whole project.
 
 ## 8. The retrieval progression, task by task
 
-Each task is one architectural change, isolated so its effect is independently verifiable. The limits below were observed in the live runs of this lab (OpenSearch 3.6.0, Bedrock Claude Haiku 4.5, 260 recipes as 1,823 chunks) unless marked as read from the code. The task pages hold the commands and sample output. To pick between the approaches rather than follow them in order, see [Choosing a retrieval approach](concepts/CHOOSING_RETRIEVAL.md).
+Each task is one architectural change, isolated so its effect is independently verifiable. The limits below describe the original workshop runs (OpenSearch 3.6.0, Bedrock Claude Haiku 4.5, 260 recipes as 1,823 chunks) unless marked as read from the code. They are teaching-example provenance, not a rerun of this revision's provider adapters. The task pages hold the commands and sample output. To pick between the approaches rather than follow them in order, see [Choosing a retrieval approach](concepts/CHOOSING_RETRIEVAL.md).
 
 ### Baseline pair: Vector RAG and BM25 RAG
 
@@ -320,16 +323,11 @@ Add a new task, or a variation of one, by keeping to the same shape:
 | Governance Tiering | Citation extraction and hallucination detection (offline); a hot-tier question resolves without escalation; a long-term-tier question escalates. |
 | Operationalize Production | Alert and drift logic (offline); the retention policy can be ensured; live governance stats are well formed. |
 
-**What was tested.** Python 3.10.0 on macOS with the dependency set in `support/requirements.txt` (spaCy 3.8.16, NumPy 2.2.6, `en_core_web_sm` 3.8.0); Instaclustr OpenSearch 3.6.0 (with the neural-search and index-management plugins; neural-search is the AI Search plugin in the Instaclustr console); Amazon Bedrock with Claude Haiku 4.5; `all-MiniLM-L6-v2`; spaCy `en_core_web_sm` via the local service. On this stack every task's ingest and `validate.py` were run against the live cluster, and the probes on the pages that depend on NER output (Tasks 3, 5 and 6, and the NER concept page) were re-run. Stored entities and a few NER-dependent scores differ from earlier runs on spaCy 3.5; the pages show the current values.
+**Original teaching-run provenance.** The supplied workshop records Python 3.10.0 on macOS, spaCy 3.8.16, NumPy 2.2.6, `en_core_web_sm` 3.8.0, Instaclustr OpenSearch 3.6.0 with neural-search and index-management plugins, Amazon Bedrock Claude Haiku 4.5, and `all-MiniLM-L6-v2`. Its task ingestions, validators, and NER probes produced the recorded teaching examples. These historical runs predate the current provider-adapter changes and do not establish live compatibility of those changes.
 
-**Probes.** The `python - <<'PY'` probes on the task and concept pages were run against the same live services, and each page's **Expected** block is its real output. They read the indexes or the NER service and call no LLM; none writes to the cluster. They are teaching aids and are not part of any `validate.py`. Probes that print scores reproduce the ranking and counts, and the scores themselves drift with the index.
+**Probes.** The `python - <<'PY'` probes on the task and concept pages record output from those original live services. They read the indexes or NER service and call no LLM; none writes to the cluster. They are teaching aids and are not part of any `validate.py`. Compare the stated invariants; scores can drift with the index.
 
 **Default compatibility target.** Python 3.12 is the default recommended interpreter. The setup check accepts Python 3.10 and newer without an upper-version gate; package metadata determines which newer interpreters can install the full dependency set.
-
-**Verification boundaries.** Not tested: Python 3.12 or any interpreter other than 3.10, the `support/Dockerfile.dev` development container, live OpenAI calls (the OpenAI path imports the official SDK only when selected, and the live runs used Bedrock), non-macOS systems (the CA-bundle self-heal does nothing there), other OpenSearch versions, larger data than the 260-recipe sample, and concurrent users.
-
-**Regression checks.** There is no unit-test suite in this folder. The task `validate.py` scripts are live-service smoke tests, and several require the NER service. No CI workflow is included. Treat a green task run as "the demonstrated behavior still holds on this data", not exhaustive retrieval-regression coverage.
-
 **Suggested workflow for a change.** Read the task's source map under `references/`; change the shared module first if the change is shared; rerun `make validate` in every task that imports it (a change in `opensearch_client.py` can affect Tasks 2 to 7); update the task page if a command, output or number changed; check that links and anchors still resolve.
 
 ## 13. Data
@@ -339,5 +337,5 @@ Add a new task, or a variation of one, by keeping to the same shape:
   pulled from [`datahiveai/recipes-with-nutrition`](https://huggingface.co/datasets/datahiveai/recipes-with-nutrition)
   on HuggingFace. The sample is included directly, so no dataset download is
   needed, and this repo has no script that regenerates it.
-- Chunking: every task indexes and searches chunks (see [Chunking](concepts/CHUNKING.md)). Each recipe is split by section into 6 to 8 chunks (1,823 in all), each starting with the recipe name and source and carrying the recipe's fields. The page text (introduction, method, serving notes) in `support/recipes/recipes_synthetic.json` is **synthetic**, generated by `support/generate_synthetic_recipes.py` from each recipe's ingredient list; the ingredients, cautions and labels come from the original dataset.
+- Chunking: every task indexes and searches chunks (see [Chunking](concepts/CHUNKING.md)). Each recipe is split by section into 6 to 8 chunks (1,823 in all), each starting with the recipe name and source and carrying the recipe's fields. The page text (introduction, method, serving notes) in `support/recipes/recipes_synthetic.json` is **synthetic**, generated by `support/generate_synthetic_recipes.py` from each recipe's ingredient list; the ingredients, cautions and labels come from the original dataset. The optional generator uses the selected shared provider with a 1,500-token override and up to three application-level attempts per recipe generation; SDK retries remain disabled. Its `--scan` path reads local files without provider credentials or model calls.
 - Same-name recipes: the sample deliberately includes two "Fish and Chips" recipes from different sources, `thegratefulgirlcooks.com` (no cautions, `lt`) and `womensweeklyfood.com.au` (Sulfites, `hot`), which several tasks use to expose where retrieval confuses them.

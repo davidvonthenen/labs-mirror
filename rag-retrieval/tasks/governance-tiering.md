@@ -455,6 +455,6 @@ The [Governance Tiering source map](../references/governance-tiering.md#source-m
 for common fixes -- including what to check if `ner_service.py` isn't
 running (entity matching silently degrades to plain full-text matching
 rather than erroring), missing `.env` values, certificate errors, and
-Bedrock model access.
+LLM-provider model access.
 
 Continue to [Task 7: Operationalize Production](operationalize-production.md), or return to the [task index](../README.md#tasks).

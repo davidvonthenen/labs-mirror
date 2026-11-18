@@ -9,16 +9,21 @@ distinguish a real bug from expected behavior (e.g. Governance Tiering's escalat
 
 ## Setup
 
-### `RuntimeError: Missing configuration in .env`
+### `RuntimeError: Missing configuration in the environment or optional .env`
 
-Raised by `support/common/config.py`'s `require_configured()`, which every task
-calls before connecting to anything. The message lists each problem it found:
-an empty or placeholder `OPENSEARCH_HOST`, an empty `OPENSEARCH_USER` or
-`OPENSEARCH_PASSWORD`, and an empty `BEDROCK_MODEL_ID` (or, with
-`LLM_PROVIDER=openai`, an empty `OPENAI_API_KEY` or `OPENAI_MODEL`). Fix: `cp
-support/.env.example .env` if you haven't already, then fill in real values. A
-stale copy of `.env.example` with the placeholder host
-(`your-cluster-host.instaclustr.com`) triggers this same error.
+`support/common/config.py`'s `require_configured()` checks cluster settings
+and, for generation, the selected provider's settings. The message names
+missing values: `OPENSEARCH_HOST`, `OPENSEARCH_USER`, `OPENSEARCH_PASSWORD`,
+then `OPENAI_API_KEY` / `OPENAI_MODEL` for the default `openai` provider,
+`ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` for `anthropic`, or
+`BEDROCK_MODEL_ID` for `bedrock`. Bedrock also needs valid AWS credentials.
+Ingestion does not require generation credentials. For provider authentication, model,
+or parameter failures, see [provider request errors](setup-environment.md#provider-authentication-model-or-parameter-errors).
+
+Configure the named values through `insta config`, the inherited environment,
+or a lab-root `.env` copied from `support/.env.example`. Do not overwrite an
+existing configured file or print secret values while diagnosing. An old
+placeholder host (`your-cluster-host.instaclustr.com`) also fails this check.
 
 The check does **not** recognise the placeholder user and password from
 `.env.example` (`your-username`, `your-password`). If you set the host but leave
@@ -56,20 +61,20 @@ Linux/Windows, or if this still doesn't resolve it, fall back to
 installing your proxy's root CA into `certifi`'s bundle manually, or set
 `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` yourself before running any task.
 
-### `AccessDeniedException` calling Bedrock
+### Bedrock authorization errors
 
-Bedrock model access is an explicit **per-model opt-in** in the AWS
-console (Bedrock → Model access), separate from having Bedrock IAM
-permissions at all. Check that the exact model in `BEDROCK_MODEL_ID` shows
-as "Access granted" there — not just that your IAM user/role has
-`bedrock:InvokeModel`.
+The `anthropic.AnthropicBedrock` client authenticates with AWS credentials.
+Verify the active AWS identity/profile, the configured region, access to the
+selected Claude model or inference profile, and permission to invoke it.
+An Anthropic API key does not grant AWS access. The setup credential check
+only discovers credentials; it does not verify model authorization.
 
 ### `ValidationException: The provided model identifier is invalid`
 
-`BEDROCK_MODEL_ID` must be the exact model ID string from Bedrock's Model
-access page (copy it exactly, including any prefix), and it must be available in
-the region set by `AWS_REGION` — Bedrock model availability varies by
-region.
+`BEDROCK_MODEL_ID` must be an exact Claude model ID or supported inference
+profile ID for your AWS account and `AWS_REGION`. A direct Anthropic API model
+ID is not interchangeable with a Bedrock identifier. Check the selected
+provider's current model listing and access configuration.
 
 ### `ValidationException: Invocation of model ID ... with on-demand throughput isn't supported`
 

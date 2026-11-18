@@ -27,9 +27,6 @@
         "instructions": {
           "$ref": "#/$defs/path"
         },
-        "skill": {
-          "$ref": "#/$defs/path"
-        },
         "adaptation": {
           "$ref": "#/$defs/path"
         },
@@ -43,7 +40,6 @@
       "required": [
         "human",
         "instructions",
-        "skill",
         "adaptation",
         "architecture",
         "contracts"
@@ -275,6 +271,7 @@
               "model_inference",
               "service_start",
               "index_write",
+              "index_delete",
               "cluster_config_write",
               "audit_write",
               "retention_delete"

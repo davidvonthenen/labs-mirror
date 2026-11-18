@@ -132,14 +132,17 @@ class LabValidator:
         if path is None:
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+            data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+            if not isinstance(data, dict):
+                raise ValueError("Expected a JSON object, not null or another value type.")
+            return data
         except (ValueError, OSError, UnicodeError) as exc:
             self.error("invalid_json", relative, str(exc))
             return None
 
-    def check_schema(self, schema_validator) -> dict | None:
-        schema = self.load_json("references/lab.schema.json")
-        manifest = self.load_json("references/lab.json")
+    def check_schema(self, schema_validator, *, schema_path="references/lab.schema.json", manifest_path="references/lab.json", data=None) -> dict | None:
+        schema = self.load_json(schema_path)
+        manifest = data if data is not None else self.load_json(manifest_path)
         if schema is None or manifest is None:
             return None
         pending = [schema]
@@ -148,7 +151,7 @@ class LabValidator:
             if isinstance(item, dict):
                 for key in ("$ref", "$dynamicRef"):
                     if key in item and (not isinstance(item[key], str) or not item[key].startswith("#")):
-                        self.error("external_schema_reference", "references/lab.schema.json", "Schema references must stay within this document; remote resolution is disabled.")
+                        self.error("external_schema_reference", schema_path, "Schema references must stay within this document; remote resolution is disabled.")
                 pending.extend(item.values())
             elif isinstance(item, list):
                 pending.extend(item)
@@ -159,10 +162,10 @@ class LabValidator:
             errors = sorted(schema_validator(schema).iter_errors(manifest), key=lambda error: str(list(error.absolute_path)))
             for error in errors:
                 location = "/".join(str(part) for part in error.absolute_path)
-                self.error("manifest_schema", f"references/lab.json/{location}", error.message)
+                self.error("manifest_schema", f"{manifest_path}/{location}", error.message)
         except Exception as exc:  # Includes malformed or unresolved local JSON Schema references.
-            self.error("invalid_schema", "references/lab.schema.json", str(exc))
-        self.report["checked"].append("manifest_schema")
+            self.error("invalid_schema", schema_path, str(exc))
+        self.report["checked"].append(f"schema:{manifest_path}")
         return manifest if self.report["ok"] else None
 
     def check_paths(self, manifest: dict) -> None:
@@ -173,22 +176,89 @@ class LabValidator:
             paths += [task[key] for key in ("docs", "reference", "troubleshooting")]
             paths += task["concepts"] + task["source_files"]
         for value in paths:
-            resolved = self.path(value, "references/lab.json")
-            if Path(value).name == "common" and Path(value).parent.name == "src":
-                expected = self.root / "support/common"
-                if not (self.root / value).is_symlink() or resolved != expected.resolve() or not all((expected / name).is_file() for name in ("__init__.py", "config.py")):
-                    self.error("shared_package_link", value, "Preserve this symlink to support/common with its __init__.py and config.py; a text file or another package is not equivalent.")
-        # Archive tools can silently expand the shared links into copies. Those
-        # copies change __file__-relative paths and drift from the shared code.
-        expected = (self.root / "support/common").resolve()
+            self.path(value, "references/lab.json")
+        # The supplied ZIP uses real directories. Keep those portable copies
+        # aligned with support/common; canonical symlinks also remain valid.
+        canonical = self.root / "support/common"
+        expected = {path.relative_to(canonical): path.read_bytes() for path in canonical.rglob("*.py")}
         for source in sorted((self.root / "scripts").glob("*/src")):
             common = source / "common"
-            if not common.is_symlink() or common.resolve() != expected:
-                self.error(
-                    "shared_package_link", str(common.relative_to(self.root)),
-                    "Expected a relative symlink to ../../../support/common; preserve links when packaging and extracting the lab.",
-                )
+            actual = {path.relative_to(common): path.read_bytes() for path in common.rglob("*.py")}
+            if actual != expected:
+                self.error("shared_package_drift", common.relative_to(self.root), "Keep this package identical to support/common, including new or removed modules.")
+        example = self.root / ".env.example"
+        if example.exists() and example.read_bytes() != (self.root / "support/.env.example").read_bytes():
+            self.error("config_example_drift", ".env.example", "Keep the root and support configuration examples identical.")
         self.report["checked"].append("declared_paths")
+
+    def check_cli(self, manifest: dict, schema_validator, yaml) -> None:
+        """Validate the CLI contract and its links to the human task/source map."""
+        path = self.path("insta.yaml", "insta.yaml")
+        if path is None:
+            return
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            self.error("invalid_yaml", "insta.yaml", str(exc))
+            return
+        if not isinstance(data, dict):
+            self.error("invalid_yaml", "insta.yaml", "Expected one YAML mapping.")
+            return
+        data = self.check_schema(schema_validator, schema_path="insta.schema.json", manifest_path="insta.yaml", data=data)
+        if data is None:
+            return
+        self.path(data["instructions"], "insta.yaml")
+        self.path(data["runtime"]["requirements"], "insta.yaml")
+        if data["id"] != manifest["lab_id"] or data["instructions"] != manifest["entrypoints"]["instructions"]:
+            self.error("cli_manifest_drift", "insta.yaml", "Lab ID and instructions must match references/lab.json.")
+        tasks = {task["id"]: task for task in manifest["tasks"]}
+        if set(data["tasks"]) != set(tasks):
+            self.error("cli_task_drift", "insta.yaml", "CLI task IDs must match the human task manifest.")
+        commands = []
+        config = data["config"]
+
+        def check_requirements(value, context):
+            for kind in ("platforms", "services"):
+                for name in value.get(kind, []):
+                    if name not in data.get(kind, {}):
+                        self.error("cli_requirement", context, f"Unknown {kind} entry: {name}")
+
+        def check_environment(value, context):
+            keys = value.get("required", []) + value.get("optional", [])
+            for rule in value.get("conditional", []):
+                keys += list(rule["when"]) + rule["required"]
+            for key in keys:
+                if key not in config:
+                    self.error("cli_config", context, f"Unknown configuration key: {key}")
+
+        for task_id, task in data["tasks"].items():
+            if task_id in tasks and task["blueprint"] != tasks[task_id]["docs"]:
+                self.error("cli_blueprint_drift", task_id, "CLI blueprint must be the registered human task page.")
+            self.path(task["blueprint"], task_id)
+            self.path(task["source"], task_id)
+            check_requirements(task.get("requires", {}), task_id)
+            check_environment(task.get("environment", {}), task_id)
+            operations = []
+            for operation_id, operation in task["operations"].items():
+                label = f"{task_id}/{operation_id}"
+                cwd = operation.get("cwd") or task["source"]
+                operations.append({"id": operation_id, "cwd": cwd, "argv": operation["command"]})
+                check_requirements(operation.get("requires", {}), label)
+                check_environment({"required": operation.get("required", []) + [index["config"] for index in operation.get("indexes", [])]}, label)
+            commands.append({"id": task_id, "commands": operations})
+        for name, service in data.get("services", {}).items():
+            check_requirements(service.get("requires", {}), name)
+            check_environment(service.get("environment", {}), name)
+            commands.append({"id": f"service:{name}", "commands": [{"id": "start", "cwd": service["cwd"], "argv": service["command"]}]})
+        for platform in data["platforms"].values():
+            self.load_json(platform["request"])
+        for steps in data["lifecycle"].values():
+            for step in steps:
+                for kind in ("platform", "service"):
+                    if kind in step and step[kind] not in data.get(kind + "s", {}):
+                        self.error("cli_lifecycle", "insta.yaml", f"Unknown {kind}: {step[kind]}")
+        self.check_commands({"tasks": commands})
+        self.report["checked"].append("cli_contract")
 
     def check_graph(self, manifest: dict) -> None:
         tasks = manifest["tasks"]
@@ -312,26 +382,6 @@ class LabValidator:
         self.report["counts"]["markdown_files"] = len(documents)
         self.report["checked"].append("markdown_links")
 
-    def check_skills(self, documents: dict[Path, str], yaml) -> None:
-        skills = [path for path in documents if path.name == "SKILL.md"]
-        if not skills:
-            self.error("missing_skill", ".agents/skills", "Expected a repository-local SKILL.md.")
-        for path in skills:
-            context = str(path.relative_to(self.root))
-            match = re.match(r"\A---\s*\n(.*?)\n---\s*(?:\n|$)", documents[path], re.S)
-            try:
-                frontmatter = yaml.safe_load(match[1]) if match else None
-                if not isinstance(frontmatter, dict):
-                    raise ValueError("Expected YAML frontmatter between --- lines.")
-                name, description = frontmatter.get("name"), frontmatter.get("description")
-                if not isinstance(name, str) or len(name) > 64 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name) or name != path.parent.name:
-                    raise ValueError("Skill name must be lowercase hyphenated text matching its folder (maximum 64 characters).")
-                if not isinstance(description, str) or not description.strip() or len(description) > 1024:
-                    raise ValueError("Skill description must be nonempty text (maximum 1024 characters).")
-            except (ValueError, yaml.YAMLError) as exc:
-                self.error("skill_frontmatter", context, str(exc))
-        self.report["checked"].append("skill_frontmatter")
-
     def check_tasks(self, manifest: dict, documents: dict[Path, str]) -> None:
         declared = {task["docs"] for task in manifest["tasks"]}
         for path in documents:
@@ -417,11 +467,11 @@ def validate(root: Path) -> dict:
     try:
         files = checker.files()
         documents = {path: path.read_text(encoding="utf-8") for path in files if path.suffix.lower() == ".md"}
+        checker.check_cli(manifest, Draft202012Validator, yaml)
         checker.check_paths(manifest)
         checker.check_graph(manifest)
         checker.check_commands(manifest)
         checker.check_links(documents)
-        checker.check_skills(documents, yaml)
         checker.check_tasks(manifest, documents)
         checker.check_python(files)
     except (OSError, UnicodeError, ValueError, KeyError, TypeError, IndexError) as exc:

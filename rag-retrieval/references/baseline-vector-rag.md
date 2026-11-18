@@ -31,6 +31,6 @@ These are the implementation files used by this task. When the overview and code
 | [`support/common/chunking.py`](../support/common/chunking.py) | `chunk_recipe()`, `load_recipes()`, `group_by_recipe()`, `chunk_fetch()`; splits a recipe into section chunks and folds ranked chunks back into recipes. |
 | [`support/common/opensearch_client.py`](../support/common/opensearch_client.py) | `create_client()`, `ensure_recipe_vector_index()`, `recipe_knn_search()`, `normalize_hits()`. |
 | [`support/common/embeddings.py`](../support/common/embeddings.py) | `EmbeddingModel` and `to_list()`. |
-| [`support/common/llm_client.py`](../support/common/llm_client.py) | `generate()` for Bedrock or an OpenAI-compatible endpoint. |
+| [`support/common/llm_client.py`](../support/common/llm_client.py) | `generate()` for OpenAI-compatible generation (default), the Anthropic API, or Claude on Bedrock. |
 | [Embedding models](../concepts/EMBEDDING_MODELS.md), [Chunking](../concepts/CHUNKING.md) and [BM25 versus kNN](../concepts/BM25_VS_KNN.md) | Concept pages with live probes behind this task. |
 | [Troubleshooting](../troubleshooting/baseline-vector-rag.md) | Setup and runtime failures for this task. |

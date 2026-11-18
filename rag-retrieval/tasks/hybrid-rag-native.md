@@ -391,7 +391,7 @@ python -m src.validate
 You have completed Hybrid RAG (Native) when ingest created the pipeline and indexed 260 recipes as 1823 chunks, each question's own recipe appeared in its top 2 hits with no NER service running, and the smoke test passed. The lesson to carry forward: a weighted fusion improves what gets *retrieved*, but it is still a score.
 
 For the reasoning behind the fusion and its weights, read [BM25 versus kNN](../concepts/BM25_VS_KNN.md#hybrid-fusion-and-the-weights). The [Hybrid RAG (Native) source map](../references/hybrid-rag-native.md#source-map) lists every file used here. Setup or runtime issue? See [Hybrid RAG (Native) troubleshooting](../troubleshooting/hybrid-rag-native.md)
-for common fixes (missing `.env` values, certificate errors, Bedrock
+for common fixes (missing `.env` values, certificate errors, provider
 model access, etc.).
 
 Continue to [Task 5: Hybrid RAG (NER + Rerank)](hybrid-rag-ner-rerank.md), or return to the [task index](../README.md#tasks).

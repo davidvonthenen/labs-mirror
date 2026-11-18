@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Central runtime configuration for every pipeline of the RAG journey.
 
-Every pipeline loads its settings from the same .env file at the repo root, so
+Every pipeline accepts the inherited environment and an optional .env file, so
 the only thing that changes between pipelines is which index/model fields they
-read -- not how they connect to Instaclustr OpenSearch or Bedrock.
+read -- not how they connect to Instaclustr OpenSearch or the selected LLM.
 """
 from __future__ import annotations
 
@@ -15,12 +15,14 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from . import LAB_ROOT
+
 # Curated 260-recipe sample shared by every ingest script (support/recipes/).
-RECIPES_SAMPLE_PATH = Path(__file__).resolve().parent.parent / "recipes" / "recipes_sample.json"
+RECIPES_SAMPLE_PATH = LAB_ROOT / "support/recipes/recipes_sample.json"
 # Synthetic intro / method / notes text for the same 260 recipes, keyed by recipe_id.
 # Chunking (common/chunking.py) splits this text and the recipe facts into the chunks
 # that every pipeline indexes and searches.
-RECIPES_SYNTHETIC_PATH = Path(__file__).resolve().parent.parent / "recipes" / "recipes_synthetic.json"
+RECIPES_SYNTHETIC_PATH = LAB_ROOT / "support/recipes/recipes_synthetic.json"
 
 _ENV_LOADED = False
 
@@ -29,7 +31,7 @@ def _load_env_once() -> None:
     global _ENV_LOADED
     if _ENV_LOADED:
         return
-    for candidate in (Path(".env"), Path(__file__).resolve().parent.parent.parent / ".env"):
+    for candidate in (Path(".env"), LAB_ROOT / ".env"):
         if candidate.exists():
             load_dotenv(str(candidate))
             break
@@ -63,8 +65,27 @@ def _get_float(name: str, default: float) -> float:
         return default
 
 
+def _get_optional_float(name: str) -> Optional[float]:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number or left unset.") from exc
+
+
 def _get_str(name: str, default: str) -> str:
     return os.getenv(name, default)
+
+
+def _clear_blank_aws_profiles() -> None:
+    # Compose and coding sessions can export empty optional values. Boto3 treats
+    # an empty profile as a named profile and rejects otherwise valid credentials.
+    for name in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE"):
+        value = os.environ.get(name)
+        if value is not None and not value.strip():
+            os.environ.pop(name, None)
 
 
 @dataclass
@@ -117,23 +138,27 @@ class Settings:
     ner_service_url: str = "http://127.0.0.1:8000/ner"
     ner_timeout_secs: float = 5.0
 
-    # --- LLM provider selection (replaces the local GGUF model) ---
-    # "bedrock" (default) uses Amazon Bedrock; "openai" uses an OpenAI or
-    # OpenAI-compatible chat completions endpoint. Every pipeline still just
-    # calls common.llm_client.generate() -- this only changes which backend
-    # it talks to.
+    # --- LLM provider selection ---
+    # OpenAI-compatible generation is the default. Native Anthropic and Claude
+    # through Amazon Bedrock use the same common.llm_client.generate() interface.
     llm_provider: str = "openai"
 
     # --- Amazon Bedrock ---
     aws_region: str = "us-east-1"
+    aws_profile: str = ""
     bedrock_model_id: str = ""
+    # Existing names are retained for generation settings shared by all providers.
+    # Omit temperature unless explicitly configured: some models reject it.
     bedrock_max_tokens: int = 1024
-    bedrock_temperature: float = 0.2
 
     # --- OpenAI / OpenAI-compatible ---
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = ""
+
+    # --- Anthropic API ---
+    anthropic_api_key: str = ""
+    anthropic_model: str = ""
 
     # --- RAG behavior ---
     rag_top_k: int = 5
@@ -147,6 +172,7 @@ class Settings:
 def load_settings() -> Settings:
     """Load settings from environment variables (populated from .env)."""
     _load_env_once()
+    _clear_blank_aws_profiles()
 
     return Settings(
         opensearch_host=_get_str("OPENSEARCH_HOST", Settings.opensearch_host),
@@ -182,12 +208,14 @@ def load_settings() -> Settings:
         ner_timeout_secs=_get_float("NER_TIMEOUT_SECS", Settings.ner_timeout_secs),
         llm_provider=_get_str("LLM_PROVIDER", Settings.llm_provider).strip().lower(),
         aws_region=_get_str("AWS_REGION", Settings.aws_region),
+        aws_profile=_get_str("AWS_PROFILE", Settings.aws_profile),
         bedrock_model_id=_get_str("BEDROCK_MODEL_ID", Settings.bedrock_model_id),
         bedrock_max_tokens=_get_int("BEDROCK_MAX_TOKENS", Settings.bedrock_max_tokens),
-        bedrock_temperature=_get_float("BEDROCK_TEMPERATURE", Settings.bedrock_temperature),
         openai_api_key=_get_str("OPENAI_API_KEY", Settings.openai_api_key),
         openai_base_url=_get_str("OPENAI_BASE_URL", Settings.openai_base_url),
         openai_model=_get_str("OPENAI_MODEL", Settings.openai_model),
+        anthropic_api_key=_get_str("ANTHROPIC_API_KEY", Settings.anthropic_api_key),
+        anthropic_model=_get_str("ANTHROPIC_MODEL", Settings.anthropic_model),
         rag_top_k=_get_int("RAG_TOP_K", Settings.rag_top_k),
         rag_num_candidates=_get_int("RAG_NUM_CANDIDATES", Settings.rag_num_candidates),
         recipe_http_timeout_secs=_get_float("RECIPE_HTTP_TIMEOUT_SECS", Settings.recipe_http_timeout_secs),
@@ -207,6 +235,11 @@ def require_configured(settings: "Settings") -> None:
             problems.append("OPENAI_API_KEY is not set")
         if not settings.openai_model:
             problems.append("OPENAI_MODEL is not set")
+    elif settings.llm_provider == "anthropic":
+        if not settings.anthropic_api_key:
+            problems.append("ANTHROPIC_API_KEY is not set")
+        if not settings.anthropic_model:
+            problems.append("ANTHROPIC_MODEL is not set")
     elif settings.llm_provider == "bedrock":
         if not settings.bedrock_model_id:
             problems.append("BEDROCK_MODEL_ID is not set")
@@ -219,8 +252,8 @@ def require_configured(settings: "Settings") -> None:
         raise RuntimeError(
             "Missing configuration in the environment or optional .env:\n  - "
             + "\n  - ".join(problems)
-            + "\n\nExport the required values in your shell or use insta config. "
-            "For manual runs, support/.env.example can also be copied to the lab-root .env."
+            + "\n\nUse insta config, export the required settings, or copy support/.env.example "
+            "to .env at the lab root and configure OpenSearch and the selected LLM provider."
         )
 
 

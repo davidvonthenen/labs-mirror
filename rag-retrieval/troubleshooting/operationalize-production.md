@@ -9,16 +9,21 @@ distinguish a real bug from expected behavior (e.g. Governance Tiering's escalat
 
 ## Setup
 
-### `RuntimeError: Missing configuration in .env`
+### `RuntimeError: Missing configuration in the environment or optional .env`
 
-Raised by `support/common/config.py`'s `require_configured()`, which every task
-calls before connecting to anything. The message lists each problem it found:
-an empty or placeholder `OPENSEARCH_HOST`, an empty `OPENSEARCH_USER` or
-`OPENSEARCH_PASSWORD`, and an empty `BEDROCK_MODEL_ID` (or, with
-`LLM_PROVIDER=openai`, an empty `OPENAI_API_KEY` or `OPENAI_MODEL`). Fix: `cp
-support/.env.example .env` if you haven't already, then fill in real values. A
-stale copy of `.env.example` with the placeholder host
-(`your-cluster-host.instaclustr.com`) triggers this same error.
+`support/common/config.py`'s `require_configured()` checks cluster settings
+and, for generation, the selected provider's settings. The message names
+missing values: `OPENSEARCH_HOST`, `OPENSEARCH_USER`, `OPENSEARCH_PASSWORD`,
+then `OPENAI_API_KEY` / `OPENAI_MODEL` for the default `openai` provider,
+`ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` for `anthropic`, or
+`BEDROCK_MODEL_ID` for `bedrock`. Bedrock also needs valid AWS credentials.
+Ingestion does not require generation credentials. For provider authentication, model,
+or parameter failures, see [provider request errors](setup-environment.md#provider-authentication-model-or-parameter-errors).
+
+Configure the named values through `insta config`, the inherited environment,
+or a lab-root `.env` copied from `support/.env.example`. Do not overwrite an
+existing configured file or print secret values while diagnosing. An old
+placeholder host (`your-cluster-host.instaclustr.com`) also fails this check.
 
 The check does **not** recognise the placeholder user and password from
 `.env.example` (`your-username`, `your-password`). If you set the host but leave

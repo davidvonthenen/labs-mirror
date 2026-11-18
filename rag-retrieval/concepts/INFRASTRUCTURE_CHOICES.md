@@ -9,7 +9,7 @@ This page explains why the lab runs the pieces it runs, and where each one runs.
 | Piece | Runs | Needs | Used by |
 | --- | --- | --- | --- |
 | OpenSearch (Instaclustr) | Remote, hosted | Host and credentials in `.env` | Tasks 2 to 7 |
-| LLM (Bedrock, or an OpenAI-compatible endpoint) | Remote | AWS access or an API key in `.env` | Generation in Tasks 2 to 6. Task 7's own commands make no LLM calls; its Step 2 runs a Task 6 query that does |
+| LLM (OpenAI-compatible, Anthropic API, or Claude on Bedrock) | Remote | The selected provider's API key or AWS credentials | Generation in Tasks 2 to 6. Task 7's own commands make no LLM calls; its Step 2 runs a Task 6 query that does |
 | Embedding model (`all-MiniLM-L6-v2`) | Local, on CPU, downloaded on first use | About 90 MB of disk and memory | Tasks 2, 4, 5 and 6 |
 | NER service (spaCy, Flask) | Local, started by hand on `127.0.0.1:8000` | The `en_core_web_sm` model, about 13 MB | Tasks 3, 5 and 6; Task 7 only checks that it answers |
 | Search pipeline `hybrid-search-pipeline` | On the cluster, one fixed name | Created by Task 4's ingest | Task 4 |
@@ -21,14 +21,15 @@ The two cluster objects with fixed names are shared by everyone who uses the sam
 
 The lab uses a hosted cluster, not a local container. Every task's `create_client()` connects to the same cluster over HTTPS with basic auth from `.env`. Using one real cluster from Task 2 onward means the *retrieval architecture* is what is being taught, not "how do I run OpenSearch locally", and the same setup carries all the way to Task 7's production checklist without a rewrite.
 
-## AWS Bedrock, or an OpenAI-compatible endpoint
+## OpenAI-compatible, Anthropic API, or Amazon Bedrock
 
-The lab does not use a local model for generation. `generate()` in `support/common/llm_client.py` is the only function every task calls to get a completion. It dispatches to one of two isolated branches based on `LLM_PROVIDER` in `.env`:
+The lab does not use a local model for generation. `generate()` in `support/common/llm_client.py` is the function every task calls to get a completion. It dispatches according to `LLM_PROVIDER` in the environment or optional `.env`:
 
-- `bedrock` (the default): the Anthropic Messages API request and response shape, via `boto3`.
-- `openai`: any OpenAI-compatible `/chat/completions` endpoint, called through the official `openai` Python SDK, for anyone without Bedrock or AWS access. The SDK is imported only when this provider is selected, so the Bedrock branch stays import-isolated from it. Only the Bedrock path was exercised in this lab.
+- `openai` (the default): an OpenAI-compatible `/chat/completions` endpoint through `openai.OpenAI`, using `OPENAI_API_KEY`, `OPENAI_MODEL`, and `OPENAI_BASE_URL`.
+- `anthropic`: the Anthropic Messages API through `anthropic.Anthropic`, using `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`.
+- `bedrock`: Anthropic Claude on Amazon Bedrock through `anthropic.AnthropicBedrock`, using `BEDROCK_MODEL_ID`, `AWS_REGION`, and AWS credentials. An Anthropic API key is not used for this path.
 
-No other module depends on either provider's wire format, only on the signature of `generate()`, so no task's `ingest.py` or `query.py` changes with the provider.
+Retrieval task modules depend on the signature of `generate()`, so selecting a provider does not change their chunking, ingestion, or query implementation. The two Anthropic clients use `messages.create()` with a user message and a top-level system prompt when supplied. Account/model availability still needs a live call; the [validation report](../VALIDATION_REPORT.md) distinguishes adapter checks from live service tests.
 
 ## A small, local embedding model
 

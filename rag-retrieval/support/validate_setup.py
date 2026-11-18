@@ -50,6 +50,7 @@ REQUIRED_MODULES = {
     "dotenv": "python-dotenv",
     "requests": "requests",
     "openai": "openai",
+    "anthropic": "anthropic[bedrock]",
     "boto3": "boto3",
     "sentence_transformers": "sentence-transformers",
     "tqdm": "tqdm",
@@ -160,6 +161,8 @@ def check_aws_credentials() -> Result:
     """Look for AWS credentials without calling AWS. Reports the source, never a value."""
     import os
 
+    if os.getenv("AWS_BEARER_TOKEN_BEDROCK", "").strip():
+        return True, "Bedrock bearer token is present; model access is not checked here"
     if importlib.util.find_spec("boto3") is None:
         return False, "boto3 is not installed, so credentials cannot be checked"
     import boto3
@@ -167,7 +170,7 @@ def check_aws_credentials() -> Result:
     previous = os.environ.get("AWS_EC2_METADATA_DISABLED")
     os.environ["AWS_EC2_METADATA_DISABLED"] = "true"  # no network lookup of instance credentials
     try:
-        credentials = boto3.session.Session().get_credentials()
+        credentials = boto3.session.Session(profile_name=_settings().aws_profile or None).get_credentials()
     except Exception as exc:  # noqa: BLE001
         return False, f"could not resolve AWS credentials ({type(exc).__name__}); check your AWS profile or SSO login"
     finally:
@@ -178,7 +181,7 @@ def check_aws_credentials() -> Result:
     if credentials is None:
         return False, (
             "no AWS credentials found; set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env, "
-            "or configure an AWS profile or SSO login (or set LLM_PROVIDER=openai)"
+            "or configure an AWS profile or SSO login (or select openai or anthropic)"
         )
     method = getattr(credentials, "method", "unknown")
     return True, f"AWS credentials found (source: {method}); Bedrock model access is not checked here"

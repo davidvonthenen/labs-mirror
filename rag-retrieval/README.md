@@ -3,8 +3,8 @@
 A hands-on, seven-task walkthrough of RAG (retrieval-augmented generation)
 architectures: a workspace setup, five retrieval architectures that each fix a
 concrete, verified failure of the one before it, and a production-hardening pass. Every task is runnable end-to-end against a real Instaclustr
-OpenSearch cluster and an LLM (Amazon Bedrock, or any OpenAI-compatible
-endpoint if you don't have AWS access), on a real (if small and curated)
+OpenSearch cluster and an LLM (OpenAI-compatible generation by default,
+the Anthropic API, or Anthropic Claude through Amazon Bedrock), on a real (if small and curated)
 dataset — not a slide deck.
 
 The running theme is a **"Recipe & Dietary Safety Assistant"**: a system
@@ -57,7 +57,7 @@ before they show up in production, not after.
 
 | This Lab | Local Laptop | CLI | Notebook | Videos |
 | --- | --- | --- | --- | --- |
-| **RAG Developer Journey** | [Getting Started](#getting-started) | _Coming soon:_<br>Codex<br>Claude<br>Cursor | _Coming soon_ | _Coming soon_ |
+| **RAG Developer Journey** | [Getting Started](#getting-started) | [insta CLI](INSTA.md)<br>[Coding tools](#learn-with-codex-claude-code-or-cursor) | _Coming soon_ | _Coming soon_ |
 
 ## Tasks
 
@@ -91,7 +91,7 @@ Setup problems: [`troubleshooting/setup-environment.md`](troubleshooting/setup-e
 
 ## Getting Started
 
-This lab is the `rag-retrieval/` folder of the [instaclustr/labs](https://github.com/instaclustr/labs) repository; Task 1 shows how to clone it. You need Python 3.10 or newer; Python 3.12 is the default recommended version. The only accounts you need are an [Instaclustr](https://www.instaclustr.com/) OpenSearch cluster and one LLM provider, either AWS Bedrock with model access enabled or an OpenAI-compatible API key (Bedrock is the path tested end to end; see Task 1 for the OpenAI note). Task 1 walks through the environment, the dependencies, and the one `.env` file every task shares, and ends with a configuration check.
+This lab is the `rag-retrieval/` folder of the [instaclustr/labs](https://github.com/instaclustr/labs) repository; Task 1 shows how to clone it. You need Python 3.10 or newer; Python 3.12 is the default recommended version. You need an [Instaclustr](https://www.instaclustr.com/) OpenSearch cluster and one LLM provider: OpenAI or an OpenAI-compatible endpoint (`LLM_PROVIDER=openai`, the default), the Anthropic API (`anthropic`), or Anthropic Claude through AWS Bedrock (`bedrock`). Task 1 maps each provider to its credentials and model setting, prepares the shared environment, and ends with a configuration check. Current adapter verification and live-test boundaries are recorded in [VALIDATION_REPORT.md](VALIDATION_REPORT.md).
 
 Every task runs from its own directory under `scripts/`, with `python -m src.<module>` or the matching `make` target. Some tasks need the local NER service from Baseline BM25 RAG running in a second terminal. Each task page says when.
 
@@ -99,7 +99,30 @@ Every task runs from its own directory under `scripts/`, with `python -m src.<mo
 
 ## Learn with Codex, Claude Code, or Cursor
 
-Coming Soon
+Open the complete `rag-retrieval/` folder in your coding tool and ask it to
+read [AGENTS.md](AGENTS.md). The same task pages, source maps, and chunked
+retrieval implementation support both the human workshop and agent-assisted
+development. [CLAUDE.md](CLAUDE.md) points Claude Code to those canonical
+instructions; other tools can read them directly.
+
+For learning, ask: **“Read AGENTS.md and references/lab.json. Guide me through
+Baseline Vector RAG, explain how chunks become recipe evidence, and verify
+each completion checkpoint using the current source.”**
+
+For a new project, use [USING_THE_TEMPLATE.md](USING_THE_TEMPLATE.md) to map
+your corpus, choose a retrieval pattern, retain parent/chunk provenance, and
+define acceptance cases. [references/lab.json](references/lab.json) provides
+task discovery, execution context, effects, and verification metadata;
+[agent contracts](references/agent-contracts.md) describe runtime boundaries.
+
+The existing `insta` workflow is described in [INSTA.md](INSTA.md); its lab
+operations are declared in [insta.yaml](insta.yaml). No separate Skill or MCP
+installation is required. Updating this archive does not publish its contents
+to the CLI's remote lab catalog.
+
+From the lab root, after installing `support/requirements-test.txt`, run
+`python scripts/validate_lab.py` to check the local package and metadata.
+Workspace readiness and live task validators remain separate checks.
 
 ## Jupyter Notebook
 

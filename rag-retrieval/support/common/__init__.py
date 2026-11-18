@@ -20,7 +20,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-_CACHE_DIR = Path(__file__).resolve().parent.parent.parent / ".cache"
+def _find_lab_root() -> Path:
+    """Locate the same root from support/common or a task's copied package."""
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "support/common/config.py").is_file() and (parent / "scripts").is_dir():
+            return parent
+    raise RuntimeError("Cannot locate the lab root; preserve the support/ and scripts/ folders.")
+
+
+LAB_ROOT = _find_lab_root()
+_CACHE_DIR = LAB_ROOT / ".cache"
 _MERGED_BUNDLE = _CACHE_DIR / "merged-ca-bundle.pem"
 
 
