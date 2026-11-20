@@ -4,12 +4,14 @@ Production-hardening checklist for this project, built out in
 [Operationalize Production](../tasks/operationalize-production.md). Each item below is
 marked **automated** (a script in `scripts/operationalize-production/src/` you can
 actually run, with a `validate.py` smoke test) or **manual** (requires
-cluster-admin/AWS-console access this codebase's app credentials
+cluster-admin or provider-account access this codebase's app credentials
 intentionally don't hold, so it stays a documented checklist item).
 
 ## A. Infrastructure & access control
 
-- [ ] **Manual.** Scope IAM to the specific Bedrock model ARN(s) in use.
+- [ ] **Manual.** For OpenAI-compatible or Anthropic API use, scope and rotate
+  the provider API key according to the account's controls. For Bedrock,
+  scope IAM to the model/inference-profile resources in use.
   See [`scripts/operationalize-production/src/hardening/bedrock_invoke_policy.json`](../scripts/operationalize-production/src/hardening/bedrock_invoke_policy.json).
 - [ ] **Manual.** Role-based OpenSearch security instead of one shared
   cluster credential. See [`scripts/operationalize-production/src/hardening/opensearch_roles.json`](../scripts/operationalize-production/src/hardening/opensearch_roles.json).
@@ -56,8 +58,9 @@ intentionally don't hold, so it stays a documented checklist item).
 
 - [ ] **Manual.** Latency alarms — build from the `latency_ms` field
   already captured per-query in `recipes-audit-log` (Governance Tiering).
-- [ ] **Manual.** Error-rate / cost alarms on Bedrock spend via AWS
-  CloudWatch's `bedrock-runtime` metrics.
+- [ ] **Manual.** Error-rate and spending alerts for the selected provider.
+  For Bedrock, use the relevant AWS monitoring/account controls; for an
+  API-key provider, use its usage and budget controls.
 
 See [Operationalize Production's task page](../tasks/operationalize-production.md) for the
 full rationale behind each item and how to run the automated checks.

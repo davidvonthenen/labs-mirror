@@ -1,6 +1,6 @@
 # Task 1: Prepare the workspace
 
-Every task in this lab runs against the same Instaclustr OpenSearch cluster and the same LLM provider, from one Python environment and one `.env` file. In this task you prepare that shared workspace once, then run a setup check before you start Baseline Vector RAG.
+Every task in this lab runs against the same Instaclustr OpenSearch cluster and the same LLM provider, from one Python environment and shared configuration. This manual workshop path uses a lab-root `.env`; `insta` and coding tools can supply the same settings through the process environment. In this task you prepare that shared workspace once, then run a setup check before you start Baseline Vector RAG.
 
 Why these services and models were chosen is explained in [Infrastructure choices](../concepts/INFRASTRUCTURE_CHOICES.md) and [Embedding models](../concepts/EMBEDDING_MODELS.md#why-this-lab-uses-minilm).
 
@@ -26,8 +26,9 @@ The [environment reference](../references/setup-environment.md) records the exac
 
 - An [Instaclustr](https://www.instaclustr.com/) OpenSearch cluster, set up as in [Your OpenSearch cluster](#your-opensearch-cluster). Every task shares one cluster; each task just uses different index names.
 - An LLM provider. Pick one:
-  - An AWS account with **Bedrock model access enabled** for at least one Anthropic Claude model (AWS console → Bedrock → Model access; this is a separate opt-in step per model, not automatic), **or**
-  - An OpenAI (or OpenAI-compatible) API key, with no AWS account needed. Set `LLM_PROVIDER=openai` in `.env` (see step 3).
+  - **OpenAI or an OpenAI-compatible endpoint (default):** an API key and a model your account can call. Use `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL`; set `OPENAI_BASE_URL` for another compatible endpoint.
+  - **Anthropic API:** an Anthropic API key and an available Claude model. Use `LLM_PROVIDER=anthropic`, `ANTHROPIC_API_KEY`, and `ANTHROPIC_MODEL`. This path uses `anthropic.Anthropic` and requires no AWS account.
+  - **Amazon Bedrock:** AWS credentials and access to the selected Anthropic Claude model or inference profile in your configured region. Use `LLM_PROVIDER=bedrock`, `BEDROCK_MODEL_ID`, and `AWS_REGION`. This path uses `anthropic.AnthropicBedrock` with AWS authentication; it does not require `ANTHROPIC_API_KEY`.
 - (Optional) A [HuggingFace](https://huggingface.co/) token. The first run downloads the embedding model from HuggingFace; setting `HF_TOKEN` in `.env` gives higher download rate limits and removes the "unauthenticated requests" warning. It does not affect `404 Not Found` lines in the log (see [the troubleshooting entry](../troubleshooting/setup-environment.md#404-not-found-lines-from-huggingfaceco-in-the-log)). Nothing requires it, and the recipe sample is already included, so no dataset download is needed.
 
 The cluster and the LLM provider are paid services, so check each provider's pricing or trial terms first. The query steps in Tasks 2 to 6 make LLM calls that your provider bills.
@@ -45,11 +46,11 @@ Your cluster needs the following:
 ### Which models
 
 - **Embedding model: keep the default,** `sentence-transformers/all-MiniLM-L6-v2`. It is small (384 dimensions, about 90 MB), runs on a CPU, needs no account, and downloads on first use. Every index in the lab is built with it, so if you change `EMBEDDING_MODEL` you must re-ingest every task ([Switching the embedding model safely](../concepts/EMBEDDING_MODELS.md#switching-the-embedding-model-safely)).
-- **LLM: a small, low-cost chat model is enough.** The lab was run with Claude Haiku 4.5 through Amazon Bedrock. Choose any model your account can call, and use the exact ID, or inference profile ID, that your provider's console shows. Task 6 asks the model to cite its sources as `[R1]`-style tags, so choose one that follows that instruction. Other models were not tested.
+- **LLM: choose a model appropriate for short grounded answers.** Use the exact model ID available to your account, or the required inference profile ID for Bedrock. Task 6 asks the model to cite its sources as `[R1]`-style tags, so evaluate that behavior with your selection. Provider SDK compatibility and live model access are different checks; [the validation report](../VALIDATION_REPORT.md) records which checks were performed for this revision.
 
 ## Before you begin
 
-You need a Bash or zsh terminal, Git, and Python 3.10 or newer with `venv` (Python 3.12 is the default recommended version). The accounts above must exist, and for Bedrock, model access must already show as granted in the AWS console. Your cluster needs the plugins and the admin account described in [Your OpenSearch cluster](#your-opensearch-cluster), and you can keep the default models ([Which models](#which-models)).
+You need a Bash or zsh terminal, Git, and Python 3.10 or newer with `venv` (Python 3.12 is the default recommended version). The selected provider account must authorize the chosen model; for Bedrock, also check its region and AWS permissions. Your cluster needs the plugins and the admin account described in [Your OpenSearch cluster](#your-opensearch-cluster), and you can keep the default embedding model ([Which models](#which-models)).
 
 Installing dependencies downloads packages from PyPI and the spaCy model. Running any task later also downloads the embedding model into `.cache/` on first use. Keep `.env` private: it holds your cluster password and LLM credentials, and it is git-ignored for that reason.
 
@@ -76,7 +77,7 @@ python -m spacy download en_core_web_sm   # needed by Baseline BM25 RAG's ner_se
 
 Use `python3.12` above for the default environment, or the executable for another installed Python 3.10+ version. Dependency availability still depends on that interpreter and platform.
 
-**Expected:** each command finishes without an error, and your prompt shows the activated `.venv`. The shared requirements install spaCy 3.8.16 and the official OpenAI Python SDK. The spaCy download selects a compatible `en_core_web_sm` model. Leave this shell active; every later task reuses it. If the spaCy download fails, see [setup troubleshooting](../troubleshooting/setup-environment.md).
+**Expected:** each command finishes without an error, and your prompt shows the activated `.venv`. The shared requirements install spaCy 3.8.16 and the official OpenAI and Anthropic Python SDKs. The spaCy download selects a compatible `en_core_web_sm` model. Leave this shell active; every later task reuses it. If the spaCy download fails, see [setup troubleshooting](../troubleshooting/setup-environment.md).
 
 ## Step 3: configure
 
@@ -93,13 +94,16 @@ Before the lab can connect, add your machine's public IP address to the cluster'
 
 ```bash
 cp support/.env.example .env
-# then edit .env: OPENSEARCH_HOST/USER/PASSWORD, and either --
-#   Bedrock (default): AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY, AWS_REGION, and
-#   BEDROCK_MODEL_ID (exact ID from Bedrock's Model access page), or
-#   OpenAI: set LLM_PROVIDER=openai, then OPENAI_API_KEY and OPENAI_MODEL.
+# then edit .env: OPENSEARCH_HOST/USER/PASSWORD, and one provider --
+#   OpenAI (default): LLM_PROVIDER=openai, OPENAI_API_KEY, OPENAI_MODEL.
+#   Anthropic API: LLM_PROVIDER=anthropic, ANTHROPIC_API_KEY, ANTHROPIC_MODEL.
+#   Bedrock: LLM_PROVIDER=bedrock, BEDROCK_MODEL_ID, AWS_REGION, and AWS
+#   credentials (environment, AWS_PROFILE, or the configured AWS credential source).
 ```
 
 **Expected:** `.env` exists at the lab root, next to `README.md`. Every task finds it there through [`load_settings()`](../support/common/config.py), whichever `scripts/<task-id>/` directory you run from.
+
+If the required values are already supplied through your shell or an `insta` session, keep that configuration. A `.env` file is optional, and inherited values take precedence over values in a file. See [the managed workflow](../INSTA.md) for the CLI path.
 
 **If someone else uses the same cluster,** index names are global to the cluster, so two people running the lab would overwrite each other's data. (Ingest also deletes and re-creates an existing index of the same name when it has the older one-document-per-recipe layout, so use a suffix rather than sharing names with someone else's data. A query never deletes an index.) Give your indexes a suffix by adding these lines to `.env` (replace `yourname`):
 
@@ -112,11 +116,11 @@ OPENSEARCH_RECIPE_VECTOR_INDEX=recipes-vector-yourname
 OPENSEARCH_AUDIT_INDEX=recipes-audit-log-yourname
 ```
 
-**Expected:** Step 4 lists these names in its `index-names` line. Later task pages show the default index names in their `Expected:` lines (for example `'recipes-bm25-baseline'`); with a suffix, expect your suffixed names instead. Two objects are not covered by the suffix, because they are created once per cluster and shared by everyone: the hybrid search pipeline `hybrid-search-pipeline` (Hybrid RAG (Native)) and the audit-log retention policy `recipes-audit-log-retention` (Operationalize Production). The pipeline is rewritten every time Hybrid RAG (Native)'s `ingest.py` or `query.py` runs (`ingest.py` with the weights you pass, `query.py` always with the defaults, 0.3 BM25 and 0.7 vector), so running that task changes it for everyone on the cluster. The policy is created only if it doesn't already exist and is then attached to your audit index, so if it already exists you share the retention window of whoever created it.
+**Expected:** Step 4 lists these names in its `index-names` line. Later task pages show the default index names in their `Expected:` lines (for example `'recipes-bm25-baseline'`); with a suffix, expect your suffixed names instead. Two objects are not covered by the suffix, because they are created once per cluster and shared by everyone: the hybrid search pipeline `hybrid-search-pipeline` (Hybrid RAG (Native)) and the audit-log retention policy `recipes-audit-log-retention` (Operationalize Production). The pipeline is rewritten every time Hybrid RAG (Native)'s `ingest.py` or `query.py` runs (`ingest.py` with the weights you pass, `query.py` always with the defaults, 0.5 BM25 and 0.5 vector), so running that task changes it for everyone on the cluster. The policy is created only if it doesn't already exist and is then attached to your audit index, so if it already exists you share the retention window of whoever created it.
 
 ## Step 4: verify the workspace
 
-[`support/validate_setup.py`](../support/validate_setup.py) checks the workspace without connecting to anything. It checks the Python version, the folder layout, the installed packages, the spaCy model, the `.env` file, and the required settings (using the same [`require_configured()`](../support/common/config.py) check every task runs). It reports missing settings by name, never their values.
+[`support/validate_setup.py`](../support/validate_setup.py) checks the workspace without connecting to anything. It checks the Python version, the folder layout, the installed packages, the spaCy model, the optional `.env` file, and the required settings (using the same [`require_configured()`](../support/common/config.py) check every task runs). It reports missing settings by name, never their values.
 
 **Mini-task; activated `.venv`, from the lab root:**
 
@@ -124,17 +128,16 @@ OPENSEARCH_AUDIT_INDEX=recipes-audit-log-yourname
 python support/validate_setup.py
 ```
 
-**Expected:** a `[PASS]` line for each of `python`, `layout`, `dependencies`, `spacy-model`, `env-file`, `configuration`, and `index-names`, plus `aws-credentials` if `LLM_PROVIDER` is `bedrock` (the default), followed by `Setup check passed.` and exit code 0. Sample output (the `python` line shows your version, `index-names` lists the names from your `.env`, and `aws-credentials` names the credential source it found):
+**Expected:** a `[PASS]` line for each of `python`, `layout`, `dependencies`, `spacy-model`, `env-file`, `configuration`, and `index-names`, followed by `Setup check passed.` and exit code 0. Bedrock also checks `aws-credentials`; OpenAI and the Anthropic API do not need AWS credentials. Illustrative OpenAI-path output follows; the Python version, package count, and index names depend on your environment:
 
 ```text
 [PASS] python: Python 3.12 (recommended version)
 [PASS] layout: README, architecture, support and 6 task folders present
-[PASS] dependencies: 12 required packages importable
+[PASS] dependencies: 13 required packages importable
 [PASS] spacy-model: spaCy 3.8.16; model en_core_web_sm loaded
 [PASS] env-file: .env found at the lab root
 [PASS] configuration: required OpenSearch and LLM settings are present
 [PASS] index-names: index names in use: OPENSEARCH_VECTOR_RECIPES_BASELINE_INDEX=recipes-vector-baseline, ...
-[PASS] aws-credentials: AWS credentials found (source: env); Bedrock model access is not checked here
 Setup check passed.
 ```
 
@@ -154,7 +157,7 @@ Pick a task and follow its task page, starting with [Baseline Vector RAG](baseli
 
 ## Completion checkpoint
 
-The workspace is ready when `.venv` is active with `support/requirements.txt` and `en_core_web_sm` installed, `.env` sits at the lab root with real values, and `python support/validate_setup.py` prints `Setup check passed.`
+The workspace is ready when the selected Python environment has `support/requirements.txt` and `en_core_web_sm` installed, configuration is supplied through the environment or a lab-root `.env`, and `python support/validate_setup.py` prints `Setup check passed.`
 
 The [environment source map](../references/setup-environment.md#source-map) lists the files behind these checks. Resolve failures through [setup troubleshooting](../troubleshooting/setup-environment.md) before advancing. To see what each service you just configured is for, and what runs where, read [Infrastructure choices](../concepts/INFRASTRUCTURE_CHOICES.md).
 

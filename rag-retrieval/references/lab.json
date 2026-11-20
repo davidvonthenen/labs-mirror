@@ -6,7 +6,6 @@
   "entrypoints": {
     "human": "README.md",
     "instructions": "AGENTS.md",
-    "skill": ".agents/skills/instaclustr-rag-builder/SKILL.md",
     "adaptation": "USING_THE_TEMPLATE.md",
     "architecture": "architecture.md",
     "contracts": "references/agent-contracts.md"
@@ -23,13 +22,15 @@
   "shared_sources": [
     "support/common/__init__.py",
     "support/common/config.py",
+    "support/common/chunking.py",
     "support/common/embeddings.py",
     "support/common/labels.py",
     "support/common/llm_client.py",
     "support/common/logging.py",
     "support/common/ner_client.py",
     "support/common/opensearch_client.py",
-    "support/recipes/recipes_sample.json"
+    "support/recipes/recipes_sample.json",
+    "support/recipes/recipes_synthetic.json"
   ],
   "resources": [
     {
@@ -42,8 +43,9 @@
       ],
       "defined_in": "support/common/config.py",
       "lifecycle": [
-        "Ingest replaces matching recipe IDs; query can create an empty index.",
-        "Use the same environment override for ingest and query; ingestion CLI overrides do not persist."
+        "Ingest replaces matching chunk IDs; query can create an empty index.",
+        "Use the same environment override for ingest and query; ingestion CLI overrides do not persist.",
+        "Ingest deletes and recreates a pre-chunk index whose mapping lacks chunk_id, even without --recreate. An existing chunk index is upserted; removed chunks remain unless it is explicitly rebuilt."
       ]
     },
     {
@@ -56,7 +58,8 @@
       ],
       "defined_in": "support/common/config.py",
       "lifecycle": [
-        "Ingest creates the index and replaces matching recipe IDs."
+        "Ingest creates the index and replaces matching chunk IDs.",
+        "Ingest deletes and recreates a pre-chunk index whose mapping lacks chunk_id, even without --recreate. An existing chunk index is upserted; removed chunks remain unless it is explicitly rebuilt."
       ]
     },
     {
@@ -69,7 +72,8 @@
       ],
       "defined_in": "support/common/config.py",
       "lifecycle": [
-        "Stores text and vectors together; ingest and query can create it."
+        "Stores text and vectors together; ingest and query can create it.",
+        "Ingest deletes and recreates a pre-chunk index whose mapping lacks chunk_id, even without --recreate. An existing chunk index is upserted; removed chunks remain unless it is explicitly rebuilt."
       ]
     },
     {
@@ -83,8 +87,9 @@
       ],
       "defined_in": "support/common/config.py",
       "lifecycle": [
-        "Shared with the paired recipe vector index; both must contain matching IDs and metadata.",
-        "Task 5 writes all-hot tiers; task 6 replaces them with hot/lt. Re-ingesting task 5 undoes task 6 tier assignments."
+        "Shared with the paired recipe vector index; both must contain matching chunk IDs, recipe IDs and metadata.",
+        "Task 5 writes all-hot tiers; task 6 replaces them with hot/lt. Re-ingesting task 5 undoes task 6 tier assignments.",
+        "Ingest deletes and recreates a pre-chunk index whose mapping lacks chunk_id, even without --recreate. An existing chunk index is upserted; removed chunks remain unless it is explicitly rebuilt."
       ]
     },
     {
@@ -99,7 +104,8 @@
       "defined_in": "support/common/config.py",
       "lifecycle": [
         "Shares corpus and tier state with the recipe BM25 index; pair writes have no transaction.",
-        "Embedding model and dimension must match the existing mapping and corpus vectors."
+        "Embedding model and dimension must match the existing mapping and corpus vectors.",
+        "Ingest deletes and recreates a pre-chunk index whose mapping lacks chunk_id, even without --recreate. An existing chunk index is upserted; removed chunks remain unless it is explicitly rebuilt."
       ]
     },
     {
@@ -128,7 +134,7 @@
       "defined_in": "support/common/opensearch_client.py",
       "lifecycle": [
         "Fixed cluster-wide name; index suffixes do not isolate it.",
-        "Ingest PUTs chosen weights; every query PUTs defaults 0.3/0.7 again."
+        "Ingest PUTs chosen weights; every query PUTs defaults 0.5/0.5 again."
       ]
     },
     {
@@ -178,7 +184,7 @@
       ],
       "defined_in": "support/common/config.py",
       "lifecycle": [
-        "Started manually from baseline-bm25-rag; no task or container startup automatically starts it.",
+        "The manual workshop starts this service from baseline-bm25-rag; insta up starts the same declared service for the managed stack. The Compose workspace does not start NER automatically.",
         "Service reads PORT/SPACY_MODEL from its process environment; client URL is separately configured.",
         "A failed request removes NER entity boosts but hard filters remain."
       ]
@@ -187,7 +193,7 @@
       "id": "llm-provider",
       "type": "model_endpoint",
       "env": "LLM_PROVIDER",
-      "default": "bedrock",
+      "default": "openai",
       "used_by": [
         "baseline-vector-rag",
         "baseline-bm25-rag",
@@ -197,9 +203,11 @@
       ],
       "defined_in": "support/common/llm_client.py",
       "lifecycle": [
-        "Supported providers are bedrock (Anthropic Messages-shaped invoke_model) and openai (chat completions).",
+        "Supported providers are openai (OpenAI-compatible chat completions), anthropic (Anthropic messages), and bedrock (AnthropicBedrock messages on Amazon Bedrock).",
         "Queries send prompts and retrieved text to the configured provider and can incur charges.",
-        "Ingest and production operations do not invoke the LLM."
+        "Ingest and production operations do not invoke the LLM.",
+        "Settings, support/.env.example, insta.yaml and Compose default to openai. Configure only the selected provider: OPENAI_API_KEY/OPENAI_MODEL, ANTHROPIC_API_KEY/ANTHROPIC_MODEL, or BEDROCK_MODEL_ID/AWS_REGION with AWS credentials.",
+        "The configured model must be available to the selected account or compatible provider. CLI summaries and coding sessions have separate provider support."
       ]
     }
   ],
@@ -304,7 +312,7 @@
             "support/validate_setup.py"
           ],
           "prerequisites": [
-            "Dependencies and the spaCy model are installed; configure the root .env or use the documented container environment."
+            "Dependencies and the spaCy model are installed; configure the root .env, the shell, or the managed insta environment."
           ],
           "effects": [
             "local_read",
@@ -322,8 +330,7 @@
             ],
             "limitations": [
               "Does not invoke OpenSearch, NER or the embedding model without the respective optional flag.",
-              "For Bedrock, credential discovery disables EC2 metadata; custom AWS credential providers are not hermetically isolated.",
-              "A support/.env file accepted by file discovery is not loaded by config.py from a task directory; Compose injects it independently."
+              "For Bedrock, credential discovery disables EC2 metadata; custom AWS credential providers are not hermetically isolated."
             ]
           }
         },
@@ -452,7 +459,8 @@
         "scripts/baseline-vector-rag/src/__init__.py",
         "scripts/baseline-vector-rag/src/ingest.py",
         "scripts/baseline-vector-rag/src/query.py",
-        "scripts/baseline-vector-rag/src/validate.py"
+        "scripts/baseline-vector-rag/src/validate.py",
+        "support/common/chunking.py"
       ],
       "commands": [
         {
@@ -465,14 +473,15 @@
           ],
           "prerequisites": [
             "Shared dependencies installed and the required OpenSearch settings configured.",
-            "Target indexes are identified for creation or document replacement."
+            "The selected target indexes are authorized for chunk writes and conditional deletion of legacy indexes without a chunk_id mapping."
           ],
           "effects": [
             "local_read",
             "local_write",
             "network_read",
             "model_download",
-            "index_write"
+            "index_write",
+            "index_delete"
           ],
           "result": {
             "format": "human_text",
@@ -482,11 +491,11 @@
               "2": "Argument parsing failed."
             },
             "success": [
-              "The unchanged sample logs Ingested 260 recipes into the selected vector baseline index."
+              "The unchanged sample logs Ingested 260 recipes as a reported number of chunks into the selected vector baseline index."
             ],
             "limitations": [
-              "Writes by recipe_id replace matching documents; records removed from a later data file are not deleted.",
-              "Existing indexes are not checked or migrated for mapping or embedding-dimension compatibility."
+              "Writes by chunk_id replace matching documents; removed recipes or surplus chunks are not removed from an existing chunk index.",
+              "An existing index with no chunk_id mapping is deleted and recreated during ordinary ingest. --recreate deletes the selected index regardless of its layout. Existing chunk indexes are not checked for every mapping or embedding-dimension mismatch."
             ]
           }
         },
@@ -521,12 +530,15 @@
               "2": "Argument parsing failed."
             },
             "success": [
-              "An ANSWER section and the retrieved evidence sections are printed."
+              "An ANSWER section and the retrieved evidence sections are printed.",
+              "Retrieved evidence is grouped by recipe_id; section labels identify the selected matching chunks."
             ],
             "limitations": [
               "BM25 and recipe-vector TransportError responses can become empty hits; an LLM answer and exit 0 do not prove successful retrieval.",
               "Answers are not checked for factual correctness; inspect returned source records.",
-              "The query creates its selected vector index when missing."
+              "The query creates its selected vector index when missing.",
+              "An old-layout index is rejected with OldLayoutIndexError; query never deletes it. Ingest performs the documented conversion.",
+              "RAG_TOP_K counts grouped recipes; RAG_NUM_CANDIDATES is a raw chunk ANN pool, raised to at least chunk_fetch(top_k)."
             ]
           }
         },
@@ -560,12 +572,14 @@
               "1": "A dependency, configuration, runtime, or assertion failure occurred."
             },
             "success": [
-              "Two PASS lines confirm hits/answer and reproduction of the documented retrieval gap."
+              "Four PASS lines cover chunk token limits and context prefixes, recipe grouping, hits/answer, and the documented vector source-disambiguation gap."
             ],
             "limitations": [
               "This is a live integration smoke test, not an offline check.",
               "Runs three LLM generations and may create a missing index.",
-              "A changed corpus or embedding model can invalidate the intentionally failing retrieval example."
+              "A changed corpus or embedding model can invalidate the intentionally failing retrieval example.",
+              "An old-layout index is rejected with OldLayoutIndexError; query never deletes it. Ingest performs the documented conversion.",
+              "The token-limit check loads the selected embedding tokenizer; the full validation also contacts OpenSearch and the LLM."
             ]
           }
         }
@@ -573,7 +587,8 @@
       "acceptance": [
         "Ingestion uses the vector-baseline index selected by OPENSEARCH_VECTOR_RECIPES_BASELINE_INDEX.",
         "For the original sample, the thegratefulgirlcooks.com question omits that source while retrieving womensweeklyfood.com.au.",
-        "The live smoke test passes when the original demonstration is intended."
+        "The live smoke test passes when the original demonstration is intended.",
+        "Indexes store chunk documents keyed by chunk_id; displayed hits and top-k counts are grouped recipes, with up to three matching evidence chunks per recipe."
       ]
     },
     {
@@ -586,7 +601,8 @@
       "troubleshooting": "troubleshooting/baseline-bm25-rag.md",
       "concepts": [
         "concepts/BM25_VS_KNN.md",
-        "concepts/NER_IN_RETRIEVAL.md"
+        "concepts/NER_IN_RETRIEVAL.md",
+        "concepts/CHUNKING.md"
       ],
       "requires": [
         "setup-environment"
@@ -597,7 +613,8 @@
         "scripts/baseline-bm25-rag/src/ingest.py",
         "scripts/baseline-bm25-rag/src/query.py",
         "scripts/baseline-bm25-rag/src/validate.py",
-        "scripts/baseline-bm25-rag/src/ner_service.py"
+        "scripts/baseline-bm25-rag/src/ner_service.py",
+        "support/common/chunking.py"
       ],
       "commands": [
         {
@@ -643,14 +660,15 @@
           ],
           "prerequisites": [
             "Shared dependencies installed and the required OpenSearch settings configured.",
-            "Target indexes are identified for creation or document replacement.",
+            "The selected target indexes are authorized for chunk writes and conditional deletion of legacy indexes without a chunk_id mapping.",
             "The baseline-bm25-rag NER service is running with its spaCy model installed."
           ],
           "effects": [
             "local_read",
             "local_write",
             "network_read",
-            "index_write"
+            "index_write",
+            "index_delete"
           ],
           "result": {
             "format": "human_text",
@@ -660,11 +678,11 @@
               "2": "Argument parsing failed."
             },
             "success": [
-              "The unchanged sample logs Ingested 260 recipes into the selected BM25 baseline index."
+              "The unchanged sample logs Ingested 260 recipes as a reported number of chunks into the selected BM25 baseline index."
             ],
             "limitations": [
-              "Writes by recipe_id replace matching documents; records removed from a later data file are not deleted.",
-              "Existing indexes are not checked or migrated for mapping or embedding-dimension compatibility.",
+              "Writes by chunk_id replace matching documents; removed recipes or surplus chunks are not removed from an existing chunk index.",
+              "An existing index with no chunk_id mapping is deleted and recreated during ordinary ingest. --recreate deletes the selected index regardless of its layout. Existing chunk indexes are not checked for every mapping or embedding-dimension mismatch.",
               "NER failures are logged and yield no extracted entities; source and recipe_name tags are still indexed."
             ]
           }
@@ -699,7 +717,8 @@
               "2": "Argument parsing failed."
             },
             "success": [
-              "An ANSWER section and the retrieved evidence sections are printed."
+              "An ANSWER section and the retrieved evidence sections are printed.",
+              "Retrieved evidence is grouped by recipe_id; section labels identify the selected matching chunks."
             ],
             "limitations": [
               "BM25 and recipe-vector TransportError responses can become empty hits; an LLM answer and exit 0 do not prove successful retrieval.",
@@ -749,7 +768,8 @@
       "acceptance": [
         "The NER service is reachable and the BM25 baseline index is populated.",
         "Both Fish and Chips sources occur in the retrieved results for the original questions.",
-        "The live smoke test passes; inspect generated answers against retrieved text."
+        "The live smoke test passes; inspect generated answers against retrieved text.",
+        "Indexes store chunk documents keyed by chunk_id; displayed hits and top-k counts are grouped recipes, with up to three matching evidence chunks per recipe."
       ]
     },
     {
@@ -763,7 +783,8 @@
       "concepts": [
         "concepts/BM25_VS_KNN.md",
         "concepts/CHOOSING_RETRIEVAL.md",
-        "concepts/EMBEDDING_MODELS.md"
+        "concepts/EMBEDDING_MODELS.md",
+        "concepts/CHUNKING.md"
       ],
       "requires": [
         "setup-environment"
@@ -773,7 +794,8 @@
         "scripts/hybrid-rag-native/src/__init__.py",
         "scripts/hybrid-rag-native/src/ingest.py",
         "scripts/hybrid-rag-native/src/query.py",
-        "scripts/hybrid-rag-native/src/validate.py"
+        "scripts/hybrid-rag-native/src/validate.py",
+        "support/common/chunking.py"
       ],
       "commands": [
         {
@@ -786,7 +808,7 @@
           ],
           "prerequisites": [
             "Shared dependencies installed and the required OpenSearch settings configured.",
-            "Target indexes are identified for creation or document replacement."
+            "The selected target indexes are authorized for chunk writes and conditional deletion of legacy indexes without a chunk_id mapping."
           ],
           "effects": [
             "local_read",
@@ -794,7 +816,8 @@
             "network_read",
             "model_download",
             "index_write",
-            "cluster_config_write"
+            "cluster_config_write",
+            "index_delete"
           ],
           "result": {
             "format": "human_text",
@@ -804,13 +827,13 @@
               "2": "Argument parsing failed."
             },
             "success": [
-              "The hybrid index and hybrid-search-pipeline are created or updated, and the unchanged sample logs 260 ingested recipes."
+              "The hybrid index and hybrid-search-pipeline are created or updated, and the unchanged sample logs 260 recipes and their chunk total."
             ],
             "limitations": [
-              "Writes by recipe_id replace matching documents; records removed from a later data file are not deleted.",
-              "Existing indexes are not checked or migrated for mapping or embedding-dimension compatibility.",
+              "Writes by chunk_id replace matching documents; removed recipes or surplus chunks are not removed from an existing chunk index.",
+              "An existing index with no chunk_id mapping is deleted and recreated during ordinary ingest. --recreate deletes the selected index regardless of its layout. Existing chunk indexes are not checked for every mapping or embedding-dimension mismatch.",
               "The cluster needs hybrid-query/search-pipeline support.",
-              "The fixed hybrid-search-pipeline name is shared by the cluster; the next query resets any custom ingestion weights to 0.3/0.7."
+              "The fixed hybrid-search-pipeline name is shared by the cluster; the next query resets any custom ingestion weights to 0.5/0.5."
             ]
           }
         },
@@ -846,13 +869,15 @@
               "2": "Argument parsing failed."
             },
             "success": [
-              "An ANSWER section and the retrieved evidence sections are printed."
+              "An ANSWER section and the retrieved evidence sections are printed.",
+              "Retrieved evidence is grouped by recipe_id; section labels identify the selected matching chunks."
             ],
             "limitations": [
               "A normal exit does not establish factual answer correctness.",
-              "Every query PUTs the fixed hybrid-search-pipeline with weights 0.3/0.7 and creates its index if missing.",
-              "Native hit dictionaries retain OpenSearch _source/_score nesting.",
-              "This branch has no explicit require/exclude CLI filters."
+              "Every query PUTs the fixed hybrid-search-pipeline with weights 0.5/0.5 and creates its index if missing.",
+              "Native results are normalized and grouped by recipe_id; each grouped hit carries score, chunks, matched_chunks and evidence text.",
+              "This branch has no explicit require/exclude CLI filters.",
+              "An old-layout index is rejected with OldLayoutIndexError; query never deletes it. Ingest performs the documented conversion."
             ]
           }
         },
@@ -891,7 +916,8 @@
             ],
             "limitations": [
               "This is a live integration smoke test, not an offline check.",
-              "Runs two LLM generations and writes the shared search pipeline for each question."
+              "Runs two LLM generations and writes the shared search pipeline for each question.",
+              "An old-layout index is rejected with OldLayoutIndexError; query never deletes it. Ingest performs the documented conversion."
             ]
           }
         }
@@ -899,7 +925,8 @@
       "acceptance": [
         "The cluster supports the native hybrid query and normalization pipeline.",
         "For the original sample, the named recipe appears in each question's first two hits.",
-        "The live smoke test passes without an NER service."
+        "The live smoke test passes without an NER service.",
+        "Indexes store chunk documents keyed by chunk_id; displayed hits and top-k counts are grouped recipes, with up to three matching evidence chunks per recipe."
       ]
     },
     {
@@ -913,7 +940,8 @@
       "concepts": [
         "concepts/BM25_VS_KNN.md",
         "concepts/CHOOSING_RETRIEVAL.md",
-        "concepts/NER_IN_RETRIEVAL.md"
+        "concepts/NER_IN_RETRIEVAL.md",
+        "concepts/CHUNKING.md"
       ],
       "requires": [
         "setup-environment"
@@ -923,7 +951,8 @@
         "scripts/hybrid-rag-ner-rerank/src/__init__.py",
         "scripts/hybrid-rag-ner-rerank/src/ingest.py",
         "scripts/hybrid-rag-ner-rerank/src/query.py",
-        "scripts/hybrid-rag-ner-rerank/src/validate.py"
+        "scripts/hybrid-rag-ner-rerank/src/validate.py",
+        "support/common/chunking.py"
       ],
       "commands": [
         {
@@ -936,7 +965,7 @@
           ],
           "prerequisites": [
             "Shared dependencies installed and the required OpenSearch settings configured.",
-            "Target indexes are identified for creation or document replacement.",
+            "The selected target indexes are authorized for chunk writes and conditional deletion of legacy indexes without a chunk_id mapping.",
             "The baseline-bm25-rag NER service is running with its spaCy model installed."
           ],
           "effects": [
@@ -944,7 +973,8 @@
             "local_write",
             "network_read",
             "model_download",
-            "index_write"
+            "index_write",
+            "index_delete"
           ],
           "result": {
             "format": "human_text",
@@ -954,12 +984,12 @@
               "2": "Argument parsing failed."
             },
             "success": [
-              "The unchanged sample logs 260 recipes written to each selected recipe index."
+              "The unchanged sample logs 260 recipes and their chunk total written to each selected recipe index."
             ],
             "limitations": [
-              "Writes by recipe_id replace matching documents; records removed from a later data file are not deleted.",
-              "Existing indexes are not checked or migrated for mapping or embedding-dimension compatibility.",
-              "Both indexes must contain matching recipe IDs and normalized metadata; writes are not atomic across them.",
+              "Writes by chunk_id replace matching documents; removed recipes or surplus chunks are not removed from an existing chunk index.",
+              "An existing index with no chunk_id mapping is deleted and recreated during ordinary ingest. --recreate deletes the selected index regardless of its layout. Existing chunk indexes are not checked for every mapping or embedding-dimension mismatch.",
+              "Both indexes must contain matching chunk IDs, recipe IDs and normalized metadata; writes are not atomic across them.",
               "Every document is written with tier=hot; rerunning this ingest after governance replaces its hot/lt assignments."
             ]
           }
@@ -997,13 +1027,14 @@
               "2": "Argument parsing failed."
             },
             "success": [
-              "An ANSWER section and the retrieved evidence sections are printed."
+              "An ANSWER section and the retrieved evidence sections are printed.",
+              "Retrieved evidence is grouped by recipe_id; section labels identify the selected matching chunks."
             ],
             "limitations": [
               "BM25 and recipe-vector TransportError responses can become empty hits; an LLM answer and exit 0 do not prove successful retrieval.",
               "Answers are not checked for factual correctness; inspect returned source records.",
               "The example explicitly excludes the normalized sulfites caution; natural-language negation is not converted to a filter.",
-              "The outer bool filter operates on an ANN candidate pool and may return fewer than top-k eligible hits.",
+              "The outer bool filter follows kNN. ann_pool_for_filtered_search uses max(300, index chunk count), falling back to 300 on count failures; this workshop-sized approach is not a production scaling policy.",
               "This refinement is a second kNN query, not a cross-encoder or LLM reranker."
             ]
           }
@@ -1049,9 +1080,10 @@
         }
       ],
       "acceptance": [
-        "Both recipe indexes contain the same recipe IDs and matching filter metadata.",
+        "Both recipe indexes contain matching chunk IDs, recipe IDs and filter metadata.",
         "The explicit sulfites exclusion removes matching records from grounding and refinement.",
-        "The live smoke test passes; rerun governance ingestion before using governance if this task replaced its tiers."
+        "The live smoke test passes; rerun governance ingestion before using governance if this task replaced its tiers.",
+        "Indexes store chunk documents keyed by chunk_id; displayed hits and top-k counts are grouped recipes, with up to three matching evidence chunks per recipe."
       ]
     },
     {
@@ -1065,7 +1097,8 @@
       "concepts": [
         "concepts/CHOOSING_RETRIEVAL.md",
         "concepts/NER_IN_RETRIEVAL.md",
-        "concepts/BM25_VS_KNN.md"
+        "concepts/BM25_VS_KNN.md",
+        "concepts/CHUNKING.md"
       ],
       "requires": [
         "setup-environment"
@@ -1075,7 +1108,8 @@
         "scripts/governance-tiering/src/__init__.py",
         "scripts/governance-tiering/src/ingest.py",
         "scripts/governance-tiering/src/query.py",
-        "scripts/governance-tiering/src/validate.py"
+        "scripts/governance-tiering/src/validate.py",
+        "support/common/chunking.py"
       ],
       "commands": [
         {
@@ -1088,7 +1122,7 @@
           ],
           "prerequisites": [
             "Shared dependencies installed and the required OpenSearch settings configured.",
-            "Target indexes are identified for creation or document replacement.",
+            "The selected target indexes are authorized for chunk writes and conditional deletion of legacy indexes without a chunk_id mapping.",
             "The baseline-bm25-rag NER service is running with its spaCy model installed."
           ],
           "effects": [
@@ -1096,7 +1130,8 @@
             "local_write",
             "network_read",
             "model_download",
-            "index_write"
+            "index_write",
+            "index_delete"
           ],
           "result": {
             "format": "human_text",
@@ -1106,12 +1141,12 @@
               "2": "Argument parsing failed."
             },
             "success": [
-              "The unchanged sample logs 260 indexed recipes with hot=209, lt=51, and the audit index exists."
+              "The unchanged sample logs 260 indexed recipes and their chunk total with hot=209, lt=51, and the audit index exists."
             ],
             "limitations": [
-              "Writes by recipe_id replace matching documents; records removed from a later data file are not deleted.",
-              "Existing indexes are not checked or migrated for mapping or embedding-dimension compatibility.",
-              "Both indexes must contain matching recipe IDs and normalized metadata; writes are not atomic across them.",
+              "Writes by chunk_id replace matching documents; removed recipes or surplus chunks are not removed from an existing chunk index.",
+              "An existing index with no chunk_id mapping is deleted and recreated during ordinary ingest. --recreate deletes the selected index regardless of its layout. Existing chunk indexes are not checked for every mapping or embedding-dimension mismatch.",
+              "Both indexes must contain matching chunk IDs, recipe IDs and normalized metadata; writes are not atomic across them.",
               "Uses the same recipe indexes as NER/rerank, replacing its placeholder tier field."
             ]
           }
@@ -1149,7 +1184,8 @@
               "2": "Argument parsing failed."
             },
             "success": [
-              "An ANSWER section and the retrieved evidence sections are printed."
+              "An ANSWER section and the retrieved evidence sections are printed.",
+              "Retrieved evidence is grouped by recipe_id; section labels identify the selected matching chunks."
             ],
             "limitations": [
               "BM25 and recipe-vector TransportError responses can become empty hits; an LLM answer and exit 0 do not prove successful retrieval.",
@@ -1157,7 +1193,8 @@
               "Creates the audit index when absent and attempts an audit document containing the question and generated answer.",
               "Audit TransportError is logged and suppressed; a returned answer does not prove audit persistence.",
               "Citation validation detects invented handles only; an uncited or factually incorrect answer can pass the runtime check.",
-              "REFINE_ANN_POOL=300 is tuned for the 260-record sample, not arbitrary corpus scale."
+              "The ANN pool is max(300, index chunk count), or 300 when counting fails; grouped recipe hits carry chunk evidence and audit records include evidence_chunk_ids.",
+              "Named-source pinning can add a grounded recipe beyond top_k. Context builders truncate evidence text, so an evidence chunk ID does not prove its complete text reached the model."
             ]
           }
         },
@@ -1207,7 +1244,8 @@
         "The sample is indexed with 209 hot and 51 lt recipes.",
         "The womensweeklyfood.com.au example stays hot-only; the thegratefulgirlcooks.com example escalates.",
         "Evidence handles and cited handles correspond in the demonstration; independently verify audit persistence when required.",
-        "The live smoke test passes under the original policy and sample."
+        "The live smoke test passes under the original policy and sample.",
+        "Indexes store chunk documents keyed by chunk_id; displayed hits and top-k counts are grouped recipes, with up to three matching evidence chunks per recipe."
       ]
     },
     {

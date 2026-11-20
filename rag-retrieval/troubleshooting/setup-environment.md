@@ -19,30 +19,57 @@ to this page for them from any task.
 | `layout` | A file or task folder is missing (including `support/recipes/recipes_sample.json` and `support/recipes/recipes_synthetic.json`), or you're running a copy that isn't the lab root. Open the directory containing `README.md` and `scripts/`. |
 | `dependencies` | Either `not installed: ...` (usually because `.venv` isn't active; activate it and rerun `pip install -r support/requirements.txt`), or `installed but cannot be imported: <package> (ImportError)`. The second is almost always the `scipy` problem described in the entry below. |
 | `spacy-model` | See the `en_core_web_sm` entry below. |
-| `env-file` | No `.env` in the current directory or the lab root. Run `cp support/.env.example .env` from the lab root and fill it in. |
+| `env-file` | Informational: a file is optional when configuration is inherited from the shell or `insta`. Missing values fail the separate `configuration` check. For manual file-based setup, copy `support/.env.example` to the lab-root `.env` and fill it in. |
 | `configuration` | See the `Missing configuration` entry below; the line lists the setting names. |
-| `aws-credentials` | No credentials were found for Bedrock. Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `.env` (empty values count as unset), configure an AWS profile or SSO login, or set `LLM_PROVIDER=openai`. This only looks for credentials; Bedrock model access is checked when a task first calls the model. |
+| `aws-credentials` | Only required for `LLM_PROVIDER=bedrock`. Supply AWS environment credentials (including `AWS_SESSION_TOKEN` when temporary), configure `AWS_PROFILE`/your AWS credential source, or choose an API-key provider with its corresponding settings. This check discovers credentials; it does not verify Bedrock model access. |
 | `opensearch` (with `--check-opensearch`) | The cluster didn't answer. Check `OPENSEARCH_HOST`, `OPENSEARCH_PORT`, the credentials, and your cluster's IP allow-list (an IP that changed because of a new network, VPN or proxy is a common cause). A blocked connection hangs rather than failing at once: the client waits up to 60 seconds and retries three times, so this check can take several minutes. To test in 15 seconds, run `curl -s -o /dev/null -m 15 -w "%{http_code}\n" https://<your OPENSEARCH_HOST>:9200/`: `401` means the cluster is reachable, `000` means it is not answering from this machine. The report shows only the error class, not the host. A `[WARN]` saying `neural-search plugin: NO` (the AI Search plugin in the Instaclustr console) means Hybrid RAG (Native) can't run on this cluster; see [that task's troubleshooting](hybrid-rag-native.md#hybrid-query-or-search-pipeline-rejected-by-the-cluster). |
 | `ner` (with `--check-ner`) | The local NER service didn't answer. Start it with `python -m src.ner_service` in `scripts/baseline-bm25-rag` (see Baseline BM25 RAG, step 2) and check `NER_SERVICE_URL`. |
 | `embeddings` (with `--check-embeddings`) | The model failed to download or load. Check network access to HuggingFace; a corporate proxy may need the certificate steps below, or may block `huggingface.co` outright (see the `403` entry below). |
 
 A `[SKIP]` line means an earlier check failed and blocked this one. A `[WARN]` line doesn't fail the run.
 
-### `RuntimeError: Missing configuration in .env`
+### `RuntimeError: Missing configuration in the environment or optional .env`
 
-Raised by `support/common/config.py`'s `require_configured()`, which every task
-calls before connecting to anything. The message lists each problem it found:
-an empty or placeholder `OPENSEARCH_HOST`, an empty `OPENSEARCH_USER` or
-`OPENSEARCH_PASSWORD`, and an empty `BEDROCK_MODEL_ID` (or, with
-`LLM_PROVIDER=openai`, an empty `OPENAI_API_KEY` or `OPENAI_MODEL`). Fix: `cp
-support/.env.example .env` if you haven't already, then fill in real values. A
-stale copy of `.env.example` with the placeholder host
-(`your-cluster-host.instaclustr.com`) triggers this same error.
+`support/common/config.py`'s `require_configured()` checks cluster settings
+and, for generation, the selected provider's settings. The message names
+missing values: `OPENSEARCH_HOST`, `OPENSEARCH_USER`, `OPENSEARCH_PASSWORD`,
+then `OPENAI_API_KEY` / `OPENAI_MODEL` for the default `openai` provider,
+`ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` for `anthropic`, or
+`BEDROCK_MODEL_ID` for `bedrock`. Bedrock also needs valid AWS credentials.
+Ingestion does not require generation credentials.
+
+Configure the named values through `insta config`, the inherited environment,
+or a lab-root `.env` copied from `support/.env.example`. Do not overwrite an
+existing configured file or print secret values while diagnosing. An old
+placeholder host (`your-cluster-host.instaclustr.com`) also fails this check.
 
 The check does **not** recognise the placeholder user and password from
 `.env.example` (`your-username`, `your-password`). If you set the host but leave
 those, the check passes and OpenSearch then rejects the connection with an
 authentication error (HTTP 401). Replace them with your real credentials.
+
+### Provider authentication, model, or parameter errors
+
+Check `LLM_PROVIDER` first: the accepted values are `openai` (default),
+`anthropic`, and `bedrock`. Their credentials and model identifiers are separate.
+The setup check establishes presence of settings, not successful model access.
+
+| Symptom | Check and correction |
+| --- | --- |
+| OpenAI-compatible authentication or model error | Check `OPENAI_API_KEY`, `OPENAI_MODEL`, and `OPENAI_BASE_URL` for the same account/endpoint. Use a model that accepts chat-completion requests with `max_completion_tokens`. |
+| Direct Anthropic authentication or model error | Check `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL` for the Anthropic API account. Do not supply AWS credentials or a Bedrock model/profile ID in their place. |
+| Bedrock authorization or model error | Check the AWS identity/profile, `AWS_REGION`, model/inference-profile ID, and invocation permissions. `anthropic.AnthropicBedrock` uses AWS authentication and does not use `ANTHROPIC_API_KEY`. |
+| `ProfileNotFound` before a managed Bedrock task starts | The CLI's AWS preflight runs before lab configuration loading. If no named profile is intended, run `unset AWS_PROFILE AWS_DEFAULT_PROFILE` before `insta task run`; preserve a real profile name when using one. Direct Python/Compose execution normalizes blank profile values. |
+| Rejected temperature parameter | Unset `BEDROCK_TEMPERATURE` or leave it blank to omit it. Set a numeric value only for a selected model that supports temperature; this existing setting applies across providers. |
+| No text in the provider response | The Anthropic adapters concatenate text blocks and reject a response without text. Confirm the chosen model supports this text-generation request and inspect its response type without logging credentials or sensitive context. |
+| A previous provider setting still takes effect | Existing process environment wins over dotenv. Check which execution mode supplies the setting and change it there; do not assume editing `.env` overrides an exported value. |
+
+Retry the selected task query after correcting the configuration. Provider
+errors propagate rather than automatically retrying a potentially billable
+request. The LLM adapters use a 60-second timeout with SDK retries disabled.
+See [the environment reference](../references/setup-environment.md) for the
+provider mapping and [the validation report](../VALIDATION_REPORT.md) for
+checks actually performed.
 
 ### `OSError: [E050] Can't find model 'en_core_web_sm'`
 

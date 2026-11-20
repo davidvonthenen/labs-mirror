@@ -1,9 +1,7 @@
 # Allowlist the build inputs. Never send .env, credentials, logs, or datasets.
 *
-!Dockerfile
+!Dockerfile.dev
 !requirements.txt
 !validate_setup.py
 !runtime_health.py
 !container-entrypoint.sh
-!.env
-!common

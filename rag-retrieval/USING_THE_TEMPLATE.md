@@ -1,345 +1,224 @@
 # Using this workshop as a project template
 
-Use the same source to learn how retrieval works, change an existing task, or
-build a project for another corpus with a coding assistant. The seven human
-tasks remain the teaching path. Agent guidance selects from those tasks and
-their source maps; it does not maintain a second implementation.
+Use the seven-task workshop to understand retrieval, then adapt the relevant
+source pattern to your own corpus. Human task pages and agent guidance point
+to the same Python code. The agent layer adds repository instructions,
+machine-readable task discovery, CLI declarations, and offline checks; it
+does not replace the human walkthrough or add a second retrieval implementation.
 
-This guide applies to the complete `rag-retrieval/` folder in this archive.
-It adapts the supplied journey-template guidance to the actual recipe workshop,
-whose runtime modules use third-party dependencies and human-readable output.
+## 1. Open the complete source
 
-## Contents
+Extract the complete `rag-retrieval/` folder, including hidden files. Work in
+the directory containing `AGENTS.md`, `README.md`, `scripts/`, and `support/`.
+This ZIP contains actual `common` directories under each component, so normal
+ZIP extraction does not need symbolic-link support.
 
-- [1. Open the complete local workshop](#1-open-the-complete-local-workshop)
-- [2. Check the source package before using services](#2-check-the-source-package-before-using-services)
-- [3. Choose a source pattern](#3-choose-a-source-pattern)
-- [4. Adapt a project from that pattern](#4-adapt-a-project-from-that-pattern)
-- [5. Preserve the human teaching structure](#5-preserve-the-human-teaching-structure)
-- [6. Verify the changed behavior](#6-verify-the-changed-behavior)
-- [7. Prompts for coding tools](#7-prompts-for-coding-tools)
-- [8. Completion and publication](#8-completion-and-publication)
-- [Design references and future scope](#design-references-and-future-scope)
-
-## 1. Open the complete local workshop
-
-Extract the archive with hidden files and symbolic links preserved. Keep
-`support/common/` and every `scripts/*/src/common` link together. Open the
-directory containing `README.md`, `AGENTS.md`, `scripts/`, and `support/` in
-your coding tool. Starting a tool above this folder in the larger `labs/`
-repository may leave this folder's local guidance undiscovered until it is
-explicitly read.
-
-For an installed Codex CLI, from the directory containing the extracted lab:
+For an installed Codex CLI, start from that folder:
 
 ```bash
 cd rag-retrieval
 codex
 ```
 
-**Expected:** Codex opens in the workshop directory. Ask it to identify
-`AGENTS.md` and the `instaclustr-rag-builder` Skill before using the workflow.
-In Codex, `/skills` or a `$instaclustr-rag-builder` mention selects the Skill.
-The local Skill lives at
-[`.agents/skills/instaclustr-rag-builder/SKILL.md`](.agents/skills/instaclustr-rag-builder/SKILL.md).
-This follows the current [Codex instruction-discovery documentation](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
-and [local Skills documentation](https://learn.chatgpt.com/docs/build-skills).
+**Expected:** the coding tool opens with the lab as its working directory.
+Ask it to read `AGENTS.md` and the task manifest before changing files. Claude
+Code has a small [CLAUDE.md](CLAUDE.md) redirect to the same instructions. In
+Cursor or another coding tool, explicitly include `AGENTS.md` and the selected
+task in your request when automatic discovery has not been established.
+No separate Skill installation or MCP connection is required.
 
-Other coding tools can read the same files directly. Use the portable prompt in
-[section 7](#7-prompts-for-coding-tools); automatic discovery depends on the
-client. Uploading a ZIP alone is not evidence that its instructions activated.
+For an existing `insta` project, follow [INSTA.md](INSTA.md). The manifest is
+compatible with the existing CLI; obtaining this revision through `insta new`
+also depends on which lab revision its configured catalog contains. Updating
+this ZIP does not publish it to the remote catalog.
 
-### Where each kind of information lives
+Generation defaults to OpenAI-compatible requests. `LLM_PROVIDER=anthropic`
+selects the Anthropic API; `LLM_PROVIDER=bedrock` selects Claude through
+`anthropic.AnthropicBedrock` with AWS authentication. Supply the matching
+credentials/model settings from [the environment reference](references/setup-environment.md).
+Changing the lab provider preserves the retrieval tasks and does not extend
+the external CLI's own summary/conversation provider implementation.
 
-| Artifact | Purpose |
+| Information | Canonical location |
 | --- | --- |
-| [README.md](README.md) and [tasks/](tasks/) | Human journey, learning outcomes, steps, and observed checkpoints. |
-| [AGENTS.md](AGENTS.md) | Repository rules, source authority, routing, and verification boundaries. |
-| [Local Skill](.agents/skills/instaclustr-rag-builder/SKILL.md) | Workflow for learning, running, debugging, and adapting the project. |
-| [references/lab.json](references/lab.json) | Task IDs, source paths, prerequisites, command argv and cwd, effects, and acceptance conditions. |
-| [references/lab.schema.json](references/lab.schema.json) | JSON Schema for the task manifest. |
-| [references/agent-contracts.md](references/agent-contracts.md) | Actual runtime interfaces, resource ownership, failures, and command interpretation. |
-| Existing [references/](references/), [concepts/](concepts/), and [troubleshooting/](troubleshooting/) | Exact source maps, explanations, and diagnosis for the selected task. |
-| [scripts/validate_lab.py](scripts/validate_lab.py) | Offline document/metadata validation. The supplied archive omits the checker regression tests. |
-| [references/agent-evals.md](references/agent-evals.md) | Representative agent requests and observable review criteria. |
+| Human journey and task selection | [README.md](README.md), [tasks/](tasks/) |
+| Repository instructions for coding tools | [AGENTS.md](AGENTS.md) |
+| Task IDs, paths, prerequisites, command argv/cwd, effects, checkpoints | [references/lab.json](references/lab.json) |
+| Executable operations and lifecycle for `insta` | [insta.yaml](insta.yaml), [INSTA.md](INSTA.md) |
+| Runtime, chunking, output, and mutation contracts | [references/agent-contracts.md](references/agent-contracts.md) |
+| Concepts, source maps, and failure diagnosis | [concepts/](concepts/), [references/](references/), [troubleshooting/](troubleshooting/) |
+| Offline consistency check | [scripts/validate_lab.py](scripts/validate_lab.py) |
+| Agent behavior review cases | [references/agent-evals.md](references/agent-evals.md) |
 
-`references/lab.json` remains discovery metadata, and the document checker
-never executes its commands. The managed Go CLI reads [insta.yaml](insta.yaml)
-for executable operations; see [INSTA.md](INSTA.md) for that workflow.
+Read only the context needed for the selected task. Function bodies and
+configuration establish behavior; documentation must agree with them.
 
-## 2. Check the source package before using services
+## 2. Establish a baseline
 
-With your selected Python environment active, from the lab root, install the
-small validation dependency set:
+From the lab root in the chosen Python environment:
 
 ```bash
 python -m pip install -r support/requirements-test.txt
-```
-
-**Expected:** PyYAML and jsonschema are available in that environment. This
-installation can contact the configured package index; the following checks
-operate on local files and require no workshop credentials or model downloads.
-The full retrieval dependencies in `support/requirements.txt` are separate.
-
-Run the document and metadata check:
-
-```bash
 python scripts/validate_lab.py
 ```
 
-**Expected:** exit `0` and one JSON result with `ok: true`. A validation failure
-returns exit `1`; a missing validation dependency returns exit `2`. Fix the
-reported path, contract, or document issue before relying on that metadata.
-This checks structure and discoverability, not live retrieval behavior.
+**Expected:** dependency installation completes, then the checker exits `0`
+with an `ok: true` JSON result. Installation may contact the package index;
+the checker itself uses local files and does not require workshop credentials.
+A failing check identifies inconsistencies to fix before relying on metadata.
 
-The supplied archive does not include `tests/test_validate_lab.py` or its
-`tests/` directory. The checker can run, but its separate regression suite is
-unavailable in this revision; do not report it as executed.
+For live use, complete [Task 1](tasks/setup-environment.md) or the managed CLI
+setup in [INSTA.md](INSTA.md). Then run the selected task's ingestion, queries,
+and validation using its stated cwd and prerequisites. Existing ingestion can
+replace old-layout indexes, so establish the intended target and resource
+ownership before the live run. An offline pass is not a substitute for this.
 
-For a new project, work in the destination the user requested. Preserve the
-original workshop for reference. When a complete copy is desired, a filesystem
-copy must retain hidden files and the relative `common` links. For a project
-inside an existing Git repository, follow that repository's instructions and
-review the diff instead of introducing an unrelated repository or overwriting
-an existing destination.
+An adaptation should use the destination requested by the user while keeping
+the source workshop available. For a complete copy, from its parent directory:
 
-## 3. Choose a source pattern
+```bash
+test ! -e my-rag-project && cp -R rag-retrieval my-rag-project
+```
 
-Read [Choosing a retrieval approach](concepts/CHOOSING_RETRIEVAL.md) and select
-the task whose behavior fits the target queries. Teaching order is not an
-instruction to include every architecture in a new application.
+**Expected:** a new complete folder, including dotfiles, is created only if the
+destination does not already exist. `my-rag-project` is an example name. For an
+existing repository, follow its workflow and review the diff instead of
+introducing an unrelated nested repository.
 
-| Need in the target project | Source pattern | What must remain explicit |
+## 3. Select a retrieval pattern
+
+Read [Choosing retrieval](concepts/CHOOSING_RETRIEVAL.md). The teaching order
+does not require every application to implement every stage.
+
+| Application requirement | Starting source | Decision to retain |
 | --- | --- | --- |
-| Meaning-based retrieval over short documents | [Baseline Vector RAG](references/baseline-vector-rag.md) | Semantic similarity does not establish document identity or a hard constraint. |
-| Exact names, identifiers, and keyword matching | [Baseline BM25 RAG](references/baseline-bm25-rag.md) | This implementation includes a local NER score boost; it is not an NER-free BM25 example. |
-| A server-side blend of lexical and semantic signals | [Hybrid RAG (Native)](references/hybrid-rag-native.md) | Uses one index and an OpenSearch search pipeline; the query updates the fixed shared pipeline. |
-| Structured exclusions or requirements before semantic refinement | [Hybrid RAG (NER + Rerank)](references/hybrid-rag-ner-rerank.md) | Two indexes must agree on IDs and metadata. The second phase is kNN refinement, not a cross-encoder. |
-| Priority retrieval, escalation, and an evidence/audit record | [Governance Tiering](references/governance-tiering.md) | Tiers are document labels. Audit writes and citation checks have the limits documented in the source. |
-| Monitoring and policy checks around that audit trail | [Operationalize Production](references/operationalize-production.md) | Adds operational examples; its retention validation can install whole-index deletion. |
+| Meaning-based passage retrieval | [Baseline Vector RAG](references/baseline-vector-rag.md) | Similarity does not prove source identity or enforce a hard constraint. |
+| Exact names, identifiers, and lexical matches | [Baseline BM25 RAG](references/baseline-bm25-rag.md) | This example also uses a local NER boost; its dependencies reflect that. |
+| One-index lexical/vector fusion | [Native hybrid](references/hybrid-rag-native.md) | Uses an OpenSearch search pipeline shared across indexes. |
+| Structured requirements before semantic refinement | [NER + rerank](references/hybrid-rag-ner-rerank.md) | Both indexes must agree on parent IDs and metadata; refinement is kNN, not a cross-encoder. |
+| Priority retrieval with escalation and evidence records | [Governance tiering](references/governance-tiering.md) | Tiers, named-source behavior, audit persistence, and citation limits need explicit evaluation. |
+| Monitoring and policy checks | [Production operations](references/operationalize-production.md) | Retention can delete a whole audit index; monitoring output needs interpretation. |
 
-For example, a support-article project with exact error codes and paraphrased
-symptoms can start from the native hybrid task. If the project also requires
-strict product/version selection, evaluate the two-phase filtering pattern
-against those requirements. Decide using retrieval acceptance cases, rather
-than assuming one method is superior for every corpus.
+A support-document project with exact error codes and paraphrased symptoms can
+start from native hybrid retrieval. If product/version constraints must exclude
+other records, evaluate the two-phase filtering pattern against those cases.
+Choose using observable requirements and retrieval evidence.
 
-## 4. Adapt a project from that pattern
+## 4. Adapt the corpus and chunk contract
 
-### Establish the implementation brief
+Establish the target data, representative questions, required output,
+destination, resource ownership, and acceptable failure behavior. Use available
+files to map the data before asking for missing decisions. Read the selected
+`ingest.py`, `query.py`, and `validate.py` with their task/reference pages.
 
-Use the request and available data to establish the destination, audience,
-corpus format and ownership, representative questions, required output,
-provider settings, resource ownership, and acceptable failure behavior. Ask
-for a decision only when it prevents a correct implementation; local inspection,
-data mapping, and a scoped change plan can proceed while services are absent.
+The current loader expects a recipe JSON array. Passing another path to
+`--data-file` does not create a generic document loader. Direct field access
+requires `recipe_id`, `recipe_name`, and `source`; ingredient/label fields are
+lists. The sidecar joins synthetic passages by recipe ID. Choose whether to
+map your source to that schema or make a focused loader/schema adaptation.
 
-Read the selected source map and the actual `ingest.py`, `query.py`, and
-`validate.py`. When changing a shared behavior, use
-[architecture.md's change-intent map](architecture.md#3-task-to-source-map)
-to identify affected tasks.
-
-### Define the corpus contract before changing retrieval
-
-The checked-in ingestors consume a JSON array of recipe objects. Their direct
-field accesses require `recipe_id`, `recipe_name`, and `source`; `build_text()`
-also reads ingredient and label lists. The ingestors do not expose a generic
-CSV, PDF, directory, or arbitrary-document loader.
-
-| Contract | Existing implementation to inspect | Adaptation decision |
+| Contract to decide | Source to inspect | Required adaptation work |
 | --- | --- | --- |
-| Stable document identity | `main()` in the selected `ingest.py` | Define unique IDs and an update/delete policy. Re-ingestion upserts matching IDs but leaves records removed from the input corpus. |
-| Searchable and embedded text | `build_text()` in the selected `ingest.py` | Choose which source fields become text and preserve relevant provenance. |
-| Exact metadata and labels | [labels.py](support/common/labels.py), recipe mapping/query helpers in [opensearch_client.py](support/common/opensearch_client.py) | Define field names, normalization, allowed values, and missing-value behavior. |
-| Embeddings and mapping dimensions | [embeddings.py](support/common/embeddings.py) and the selected index-creation helper | Align model, dimensions, and mapping. Existing indexes are not migrated automatically. |
-| Retrieval and candidate identity | `ask()` in the selected `query.py` | Preserve intended filter scope and the relationship between grounding IDs and refined hits. |
-| Context and generated answer | The selected `query.py` and [llm_client.py](support/common/llm_client.py) | Update domain language, context fields, and evidence rules together. |
-| Verification | The selected `validate.py` | Replace recipe-specific fixtures and assertions with target-domain cases. |
+| Parent identity and provenance | Selected ingestor; [chunking.py](support/common/chunking.py) | Define stable parent IDs and source attribution. Avoid sample ID collisions that could attach the bundled synthetic sidecar. |
+| Passage boundaries and text | `chunk_recipe()`, `_sections()`, `chunk_prefix()` | Split the target's actual sections, preserve a source-identifying prefix, and check tokenizer limits. Current character/step rules are recipe-specific. |
+| Child identity and replacement | `chunk_id`, `_check_layout()` in [opensearch_client.py](support/common/opensearch_client.py) | Positional IDs change meaning when sections move. Define obsolete-chunk removal or rebuild behavior; ordinary upsert leaves stale chunks. |
+| Exact metadata and exclusions | [labels.py](support/common/labels.py), index mappings and filter helpers | Define normalized values and missing-field semantics. Copy parent filter fields to every chunk and keep both indexes consistent. |
+| Embedding model and dimension | [embeddings.py](support/common/embeddings.py), vector index mappings | Align embedding output and index dimension; use an isolated/rebuilt index for incompatible changes. |
+| Retrieval counts and grounding | `chunk_fetch()`, `group_by_recipe()`, selected `ask()` | Distinguish requested chunks from returned parents. Evaluate duplicate-heavy hits and candidate coverage. |
+| Evidence and answer context | Selected `_build_context()` and governance metadata | Retain parent/chunk provenance, account for context truncation, and define citation/no-evidence behavior. |
+| Resource configuration | [config.py](support/common/config.py), [insta.yaml](insta.yaml) | Align ingestion/query index names and resolve shared pipeline/policy ownership. Do not modify the external CLI. |
+| Generation provider | [llm_client.py](support/common/llm_client.py), [environment reference](references/setup-environment.md) | Choose `openai`, `anthropic`, or `bedrock` without changing retrieval task code. Keep optional temperature unset unless supported by the selected model; evaluate answer/citation behavior separately from adapter syntax. |
 
-For another recipe corpus, `--data-file` can point at compatible JSON. For a
-different domain, make an explicit adapter or update the domain model in the
-new project. Do not relabel unrelated fields as `cautions` or inherit the
-recipe tiering rule without defining what those fields mean in the new domain.
-There is no automatic natural-language-to-filter conversion: the existing
-`--exclude` and `--require` arguments supply structured constraints explicitly.
+The supplied `load_recipes()` can accept a `synthetic_file` in Python; the
+ingestion CLI has no such flag. Matching sidecar IDs override a record's inline
+`synthetic` value. For a new corpus, deliberately replace that teaching-sidecar
+policy or its data. Do not represent generated recipe method text as original
+source content.
 
-### Keep code and resource changes scoped
+Chunk settings are existing constants, not a new configuration surface.
+Preserve the current defaults when the requested adaptation does not require
+changing them. If common code changes, edit `support/common/` and synchronize
+the corresponding files into all six task copies; the offline checker guards
+against drift. Do not introduce a second chunking implementation in a new
+wrapper or duplicate complete programs in Markdown.
 
-Reuse the selected task and shared clients where their contracts fit. Preserve
-the current source layout for a workshop extension. When a separate project
-needs fewer components, keep the selected task's imports, shared dependencies,
-and required NER service together, and remove unused copies and stale references
-from that new project. Do not refactor the source workshop to match the copy.
+Keep stable task IDs and paths. Update the affected task, concept/reference,
+troubleshooting guide, discovery metadata, and CLI declaration together when
+their contract changes. Do not expose a new flag merely to avoid a small,
+clear source adaptation.
 
-Set distinct resource names for the new project. Read the manifest's resources
-and [runtime contract](references/agent-contracts.md) before ingestion:
+## 5. Verify the new behavior
 
-- Ingest index overrides affect that invocation. Queries still read their
-  configured environment settings, so keep both destinations aligned.
-- Two-phase retrieval and governance share the same BM25/vector index settings.
-  Re-running the former's ingestor resets the governance tiers to `hot`.
-- Native hybrid and retention resources have fixed cluster-wide names in the
-  source. A new index suffix does not isolate those resources; explicitly
-  design their ownership before using them in another project.
-- Changed mappings or embedding dimensions require an appropriate new index
-  and reindexing plan. Current `ensure_*` helpers do not migrate existing data.
+Use acceptance cases that describe what must be retrieved, excluded, grouped,
+and retained as evidence. Expected answers alone do not establish those facts.
 
-Prefer existing configuration and function arguments. Add a flag or setting
-only when the requested behavior requires it. If changing governance, define
-the tiering policy, escalation conditions, citation behavior, audit persistence
-expectations, and retention behavior for the target domain rather than treating
-the workshop's values as production defaults.
+| Case | Evidence to inspect |
+| --- | --- |
+| Exact identity amid similar text | Correct parent ID and source, with relevant chunk IDs. |
+| Paraphrase | Relevant passages retrieved without depending on literal wording alone. |
+| Structured exclusion/requirement | Every returned chunk and parent satisfies stored metadata rules. |
+| Several high-scoring chunks from one parent | Deduplicated parent results and preserved matching-passage provenance. |
+| Empty or failed retrieval | Defined behavior, inspected warnings/errors, and no fabricated evidence claims. |
+| Corpus update or shortened document | Removed parents/obsolete chunks are handled by the chosen lifecycle. |
+| Governance, if included | Tier/escalation decisions, named-source behavior, permitted citation handles, and persisted audit data where required. |
 
-## 5. Preserve the human teaching structure
+Run the offline checker after edits, then the relevant runtime checks on the
+authorized target. An adapted corpus may invalidate the original Fish and
+Chips fixtures without breaking the retrieval implementation; create meaningful
+domain-specific cases rather than relabeling those demonstrations as passing.
+For an unchanged workshop, preserve the existing teaching assertions.
 
-For a new workshop task, use an existing task as the example. Preserve this
-top-level organization, replacing illustrative text with the actual topic:
+Separate passed, failed, skipped, and unrun checks. Model wording and score
+ordering can vary. A matching citation handle does not prove the sentence it
+follows, and a process exit `0` does not prove retrieval or audit success.
 
-```text
-# Task N: Task title
-Introduction explaining the task and its purpose
-## What you will learn
-The practical sequence is:
-Step | Activity | Checkpoint table, one row per numbered step
-## Understand the task topic
-### Topic-specific explanations as needed
-## Before you begin
-## Step 1: enter the existing workspace
-## Step 2: a concrete operation
-Additional consecutively numbered steps as needed
-## Completion checkpoint
-```
+## 6. Prompts for coding tools
 
-Explain why an operation matters, link its implementing source beside the
-explanation, identify the execution context, show the command, then give its
-`Expected:` result before another exercise or section. Keep complete programs
-in `scripts/`. Mark non-runnable excerpts as
-`Implementation excerpt (not a standalone exercise)`.
-
-Keep prerequisites and permissions under “Before you begin,” exact interface
-details in the reference, diagnosis in troubleshooting, and overall acceptance
-criteria in the completion checkpoint. Do not turn the learner page into a
-metadata form or copy all reference material into the Skill.
-
-For a new or changed task, align the README table, task number and ID, page
-steps and anchors, source map, troubleshooting backlinks, and manifest entry.
-When renaming a copied lab, update its manifest identity/title, matching schema
-constants, Skill metadata, and links together.
-The manifest's `requires` records task dependencies; command prerequisites
-explain finer distinctions, such as needing the NER service from the BM25 task
-without needing that task's populated index.
-
-## 6. Verify the changed behavior
-
-| Tier | Command or evidence | What it establishes |
-| --- | --- | --- |
-| Local source package | `python scripts/validate_lab.py` | Metadata/schema, path, documentation, Skill, and Python syntax checks. No runtime modules are imported or command records executed. |
-| Checker regression | Unavailable in this archive | The documented regression-test directory was not supplied. |
-| Workspace readiness | `python support/validate_setup.py` | Installed dependencies, configuration, and local readiness checks. Read its reference for optional service probes and credential-provider behavior. |
-| Selected task behavior | Its direct `python -m src.validate` command or `make validate` | Live assertions for that task, with the service calls and writes recorded in the manifest. |
-| Target-domain acceptance | Tests and observed evidence chosen for the new corpus | Whether the adapted project satisfies the requirements it actually claims. |
-| Coding-tool behavior | [Agent evaluation cases](references/agent-evals.md) | Whether the chosen client finds and follows the workflow on representative requests. |
-
-The vector baseline's validation deliberately reproduces a retrieval mistake
-on the supplied recipes. Changing the corpus or embedding model can invalidate
-that teaching assertion without proving the new project broken. Replace the
-fixture and criterion deliberately; do not remove a failing assertion only to
-obtain a green result.
-
-For a new project, include known-answer retrieval cases, an ambiguous match,
-hard-constraint cases when supported, no matching evidence, unavailable NER or
-search, and any claimed citation/audit behavior. Assert document membership and
-metadata constraints rather than an exact generated sentence. Investigate
-warnings and verify audit persistence independently when it is a requirement.
-
-Live checks require configured resources and may incur provider charges or
-modify resources. Use the user's established authorization and the exact
-target scope. Production validation can schedule deletion of the whole audit
-index; do not run it as a routine document gate. If services are absent,
-complete local work and report the precise integration checks left unrun.
-
-## 7. Prompts for coding tools
-
-### Portable entry prompt
+### Learn and run the current workshop
 
 ```text
-Read AGENTS.md and .agents/skills/instaclustr-rag-builder/SKILL.md in this
-rag-retrieval folder. Use references/lab.json to select relevant tasks, then
-read their source maps and implementing code. Use the existing human task
-pages for teaching and USING_THE_TEMPLATE.md for adaptation.
-
-My request: help me understand how the vector and BM25 tasks differ, then
-identify which existing source files I would change for a new document corpus.
-Do not connect to services for this explanation.
+Read AGENTS.md and references/lab.json. Help me work through the chunked
+Baseline Vector RAG task using the existing human instructions. Explain
+the parent/chunk relationship, the purpose of each command, and the
+evidence needed at the completion checkpoint. Use the current source and
+working directories. Inspect the selected cluster/index and the ingestion
+effects before running a mutation. Keep the original chunking behavior.
+Report checks actually run and distinguish unavailable live checks.
 ```
 
-### Build a project from the template
+### Build for another corpus
 
 ```text
-Use $instaclustr-rag-builder and USING_THE_TEMPLATE.md to build a separate
-support-article RAG project from this workshop. Keep this source workshop intact.
+Read AGENTS.md, USING_THE_TEMPLATE.md, and references/lab.json. Use this
+workshop as the starting point for a project over my supplied support
+documents in the destination I specify. Queries include exact error codes
+and paraphrased symptoms; product/version requirements must be enforced.
+Inspect the data and select the retrieval pattern that fits these cases.
 
-Destination: a new support-rag directory beside this workshop.
-Corpus: use the support-article JSON file I provide, with stable article IDs,
-titles, bodies, product versions, and source URLs.
-Retrieval goals: find exact error codes and paraphrased symptoms, and enforce
-explicit product/version requirements when supplied.
-Runtime: reuse the configured OpenSearch and OpenAI-compatible provider;
-choose isolated project indexes and identify any cluster-wide resources.
-Acceptance: include an exact-code case, a paraphrase, a mismatched version,
-and no matching evidence. Preserve source provenance in the answer context.
-
-Select and explain the source pattern, implement the scoped adaptation, and
-update run instructions and checks. Use only the service access already
-authorized for this project. Complete local checks before live checks and
-report actual results. Do not implement a project-management CLI.
+Define parent/chunk identity, provenance, metadata filters, sidecar policy,
+update/delete behavior, index names, and measurable acceptance cases.
+Implement focused changes in the existing layout and keep shared common
+copies synchronized. Preserve the workshop for reference. Do not alter
+the insta CLI or add flags unless the implementation requires them.
+Run offline checks and relevant available runtime checks; report actual
+evidence and remaining prerequisites without inventing passing results.
 ```
 
-This example assumes the named corpus and destination match the real request.
-Supply those inputs before asking for that build; the workshop does not include
-a support-article dataset.
+Replace the example corpus, constraints, and destination with the actual
+project requirements. These prompts guide the workflow; they do not authorize
+use of an unrelated cluster or deployment.
 
-### Extend the workshop
+## 7. Completion and publication
 
-```text
-Use $instaclustr-rag-builder to add a retrieval task for the behavior I describe.
-Read the closest existing task, its reference, and its source first. Preserve
-the seven existing tasks and current paths. Add only the required code and
-aligned teaching page, source map, troubleshooting, manifest, and checks.
-Use explicit acceptance cases for the new behavior and report what was run.
-```
+Keep the human task format: introduction, learning outcomes and step table,
+concept explanation, prerequisites, numbered steps with expected outcomes,
+and completion checkpoint. Keep full programs in source files and diagnosis
+in `troubleshooting/`. The agent layer should route readers to that material,
+not create an independently maintained copy of the workshop.
 
-## 8. Completion and publication
-
-The completed change should be reviewable as code and documentation. Confirm
-that the chosen pattern, corpus contract, resource names, run commands, error
-behavior, and acceptance criteria agree. Run the local checks, execute the
-authorized live checks appropriate to the change, and record their outcomes
-separately. Keep unresolved service or client checks visible in the validation
-record.
-
-Review the diff for unnecessary moves, extra configuration, duplicated shared
-code, stale links, and obsolete instructions. Archive the complete project with
-relative symlinks and agent files preserved; exclude secrets, environments,
-caches, generated logs, and repository administration files. A static pass is
-evidence of a consistent source package, not a production-readiness claim.
-
-## Design references and future scope
-
-The supplied `deep-research-report.md` motivates task-addressable context,
-repository instructions, focused Skills, machine contracts, and verifiable
-execution. The supplied `USING_THE_TEMPLATE.md` motivates preserving the human
-teaching composition. This implementation keeps the existing directory layout
-and reuses source maps already present rather than duplicating them.
-
-Current primary references for the agent layer:
-
-- [OpenAI: instructions with AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
-- [OpenAI: build Skills and local discovery](https://learn.chatgpt.com/docs/build-skills).
-- [JSON Schema: Draft 2020-12](https://json-schema.org/draft/2020-12).
-
-The managed `insta` CLI bootstraps these labs from the pinned
-[instaclustr/labs](https://github.com/instaclustr/labs) revision. Its lifecycle
-commands are documented in [INSTA.md](INSTA.md); [insta.yaml](insta.yaml) contains
-the executable integration. The descriptive manifest in `references/lab.json`
-continues to document the original workshop rather than replacing that contract.
+Review the resulting diff, metadata checks, relevant live evidence, and the
+[agent review scenarios](references/agent-evals.md). Exclude credentials,
+virtual environments, caches, logs, and managed runtime state from the package.
+Include a clear record of implemented behavior and any unrun checks. Remote
+catalog publication and client-specific agent evaluation are separate actions;
+do not report either as completed because this source archive was updated.

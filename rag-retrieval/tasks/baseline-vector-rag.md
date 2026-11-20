@@ -237,7 +237,7 @@ python -m src.validate
 You have completed Baseline Vector RAG when ingest reported 260 recipes as 1823 chunks, the thegratefulgirlcooks.com question's hits list shows only the womensweeklyfood.com.au recipe of the pair, and all four smoke-test checks passed. The lesson to carry forward: a plausible answer, or a polite "I don't know", doesn't show that retrieval found the right document.
 
 For the reasoning behind this task, read [Embedding models](../concepts/EMBEDDING_MODELS.md), [Chunking](../concepts/CHUNKING.md) and [BM25 versus kNN](../concepts/BM25_VS_KNN.md). The [Baseline Vector RAG source map](../references/baseline-vector-rag.md#source-map) lists every file used here. Setup or runtime issue? See [Baseline Vector RAG troubleshooting](../troubleshooting/baseline-vector-rag.md)
-for common fixes (missing `.env` values, certificate errors, Bedrock
+for common fixes (missing `.env` values, certificate errors, provider
 model access, etc.).
 
 Continue to [Task 3: Baseline BM25 RAG](baseline-bm25-rag.md), or return to the [task index](../README.md#tasks).

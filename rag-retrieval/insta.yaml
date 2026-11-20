@@ -1,4 +1,5 @@
-# Go prepares prerequisites; exercises run only through `insta task run`.
+# Go prepares prerequisites; `insta task run` invokes the existing task modules.
+# Ingest can delete a legacy index without --recreate; see the declared effects.
 schema_version: 1
 id: rag-retrieval
 name: RAG Retrieval
@@ -23,10 +24,12 @@ config:
   OPENSEARCH_RECIPE_BM25_INDEX: {default: ragretrieval-recipes-bm25}
   OPENSEARCH_RECIPE_VECTOR_INDEX: {default: ragretrieval-recipes-vector}
   OPENSEARCH_AUDIT_INDEX: {default: ragretrieval-recipes-audit-log}
-  LLM_PROVIDER: {default: openai, enum: [openai, bedrock]}
+  LLM_PROVIDER: {default: openai, enum: [openai, anthropic, bedrock]}
   OPENAI_API_KEY: {secret: true}
   OPENAI_BASE_URL: {default: "https://api.openai.com/v1"}
   OPENAI_MODEL: {default: gpt-6-luna}
+  ANTHROPIC_API_KEY: {secret: true, description: "API key for the lab direct Anthropic provider; independent of CLI summaries."}
+  ANTHROPIC_MODEL: {description: "Claude model ID for the lab direct Anthropic provider."}
   BEDROCK_MODEL_ID: {}
   AWS_REGION: {default: us-east-1}
   AWS_PROFILE: {}
@@ -68,12 +71,15 @@ tasks:
           when: {LLM_PROVIDER: openai}
           required: [OPENAI_API_KEY, OPENAI_MODEL]
         - operations: [validate]
+          when: {LLM_PROVIDER: anthropic}
+          required: [ANTHROPIC_API_KEY, ANTHROPIC_MODEL]
+        - operations: [validate]
           when: {LLM_PROVIDER: bedrock}
           required: [BEDROCK_MODEL_ID, AWS_REGION]
     operations:
       validate:
         command: [python, support/validate_setup.py]
-        effects: [local-read]
+        effects: [local-read, local-cache-write]
         verification: "The existing readiness checker exited successfully; no live retrieval was tested."
 
   baseline-vector-rag:
@@ -87,13 +93,16 @@ tasks:
           when: {LLM_PROVIDER: openai}
           required: [OPENAI_API_KEY, OPENAI_MODEL]
         - operations: [query, validate]
+          when: {LLM_PROVIDER: anthropic}
+          required: [ANTHROPIC_API_KEY, ANTHROPIC_MODEL]
+        - operations: [query, validate]
           when: {LLM_PROVIDER: bedrock}
           required: [BEDROCK_MODEL_ID, AWS_REGION]
     operations:
       ingest: &ingest
         command: [python, -m, src.ingest]
-        effects: [index-create-if-missing, index-write, model-cache-write]
-        verification: "Ingestion exited successfully; query and educational assertions have not run."
+        effects: [index-create-if-missing, index-delete-if-old-layout, index-write, model-cache-write]
+        verification: "Ingestion reports recipes and chunks. Existing indexes without chunk_id are deleted and rebuilt; queries and educational assertions have not run."
       query: &query
         mode: oneshot
         command: [python, -m, src.query]
@@ -112,13 +121,17 @@ tasks:
     requires: {platforms: [opensearch], services: [ner]}
     environment: *rag_environment
     operations:
-      ingest: *ingest
+      ingest:
+        <<: *ingest
+        effects: [index-create-if-missing, index-delete-if-old-layout, index-write, local-ner-call]
       query:
         <<: *query
         indexes: [{config: OPENSEARCH_BM25_RECIPES_BASELINE_INDEX}]
+        effects: [index-read, local-ner-call, remote-model-call]
       validate:
         <<: *validate
         indexes: [{config: OPENSEARCH_BM25_RECIPES_BASELINE_INDEX}]
+        effects: [index-read, local-ner-call, remote-model-call]
 
   hybrid-rag-native:
     blueprint: tasks/hybrid-rag-native.md
@@ -128,15 +141,15 @@ tasks:
     operations:
       ingest:
         <<: *ingest
-        effects: [index-write, shared-search-pipeline-write, model-cache-write]
+        effects: [index-create-if-missing, index-delete-if-old-layout, index-write, shared-search-pipeline-write, model-cache-write]
       query:
         <<: *query
         indexes: [{config: OPENSEARCH_HYBRID_INDEX}]
-        effects: [index-read, shared-search-pipeline-write, remote-model-call, model-cache-write]
+        effects: [index-create-if-missing, index-read, shared-search-pipeline-write, remote-model-call, model-cache-write]
       validate:
         <<: *validate
         indexes: [{config: OPENSEARCH_HYBRID_INDEX}]
-        effects: [index-read, shared-search-pipeline-write, remote-model-call, model-cache-write]
+        effects: [index-create-if-missing, index-read, shared-search-pipeline-write, remote-model-call, model-cache-write]
 
   hybrid-rag-ner-rerank:
     blueprint: tasks/hybrid-rag-ner-rerank.md
@@ -146,13 +159,15 @@ tasks:
     operations:
       ingest:
         <<: *ingest
-        effects: [index-write, governance-tier-overwrite, model-cache-write]
+        effects: [index-create-if-missing, index-delete-if-old-layout, index-write, governance-tier-overwrite, local-ner-call, model-cache-write]
       query:
         <<: *query
         indexes: [{config: OPENSEARCH_RECIPE_BM25_INDEX}, {config: OPENSEARCH_RECIPE_VECTOR_INDEX}]
+        effects: [index-read, local-ner-call, remote-model-call, model-cache-write]
       validate:
         <<: *validate
         indexes: [{config: OPENSEARCH_RECIPE_BM25_INDEX}, {config: OPENSEARCH_RECIPE_VECTOR_INDEX}]
+        effects: [index-read, local-ner-call, remote-model-call, model-cache-write]
 
   governance-tiering:
     blueprint: tasks/governance-tiering.md
@@ -160,35 +175,35 @@ tasks:
     requires: {platforms: [opensearch], services: [ner]}
     environment: *rag_environment
     operations:
-      ingest: *ingest
+      ingest:
+        <<: *ingest
+        effects: [index-create-if-missing, index-delete-if-old-layout, index-write, audit-index-create-if-missing, local-ner-call, model-cache-write]
       query:
         <<: *query
         indexes: [{config: OPENSEARCH_RECIPE_BM25_INDEX}, {config: OPENSEARCH_RECIPE_VECTOR_INDEX}]
-        effects: [index-read, audit-write, remote-model-call, model-cache-write]
+        effects: [index-read, audit-index-create-if-missing, audit-write, local-ner-call, remote-model-call, model-cache-write]
       validate:
         <<: *validate
         indexes: [{config: OPENSEARCH_RECIPE_BM25_INDEX}, {config: OPENSEARCH_RECIPE_VECTOR_INDEX}]
-        effects: [index-read, audit-write, remote-model-call, model-cache-write]
+        effects: [index-read, audit-index-create-if-missing, audit-write, local-ner-call, remote-model-call, model-cache-write]
 
   operationalize-production:
     blueprint: tasks/operationalize-production.md
     source: scripts/operationalize-production
-    environment:
-      conditional:
-        - operations: [validate]
-          when: {LLM_PROVIDER: openai}
-          required: [OPENAI_API_KEY, OPENAI_MODEL]
-        - operations: [validate]
-          when: {LLM_PROVIDER: bedrock}
-          required: [BEDROCK_MODEL_ID, AWS_REGION]
     operations:
+      monitor:
+        command: [python, -m, src.monitor]
+        requires: {platforms: [opensearch], services: [ner]}
+        required: [OPENSEARCH_HOST, OPENSEARCH_USER, OPENSEARCH_PASSWORD]
+        effects: [index-read, local-ner-call]
+        verification: "Inspect audit-query errors, record counts, rates, and NER health; an empty window or exit 0 does not prove audit coverage."
       policy-registry:
         command: [python, -m, src.policy_registry]
         effects: [local-read]
         verification: "Configured tier thresholds match the checked-in policy history."
       validate:
         command: [python, -m, src.validate]
-        requires: {platforms: [opensearch]}
+        requires: {platforms: [opensearch], services: [ner]}
         required: [OPENSEARCH_HOST, OPENSEARCH_USER, OPENSEARCH_PASSWORD]
         effects: [index-read, audit-index-write, shared-retention-policy-write, whole-audit-index-delete-scheduled]
         verification: "The production checker exited; inspect warnings/skipped ISM checks. Retention may delete the whole audit index."
